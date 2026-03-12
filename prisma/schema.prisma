@@ -1,0 +1,134 @@
+// Prisma schema (auth + profiles)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id              Int      @id @default(autoincrement())
+  email           String   @unique
+  phoneNumber     String?  @unique @map("phone_number")
+  password        String?
+  role            String?
+  isActive        Boolean  @default(false) @map("is_active")
+  phoneVerified   Boolean  @default(false) @map("phone_verified")
+  emailVerified   Boolean  @default(false) @map("email_verified")
+  isVerified      Boolean  @default(false) @map("is_verified")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  authProviders          AuthProvider[]
+  phoneVerificationCodes PhoneVerificationCode[]
+  passwordResetTokens    PasswordResetToken[]
+  pendingProfile         PendingProfile?
+  profile                UserProfile?
+
+  @@map("users")
+}
+
+model AuthProvider {
+  id             Int      @id @default(autoincrement())
+  userId         Int      @map("user_id")
+  provider       String
+  providerUserId String   @map("provider_user_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId], name: "provider_providerUserId")
+  @@unique([userId, provider], name: "userId_provider")
+  @@map("auth_providers")
+}
+
+model PhoneVerificationCode {
+  id          Int       @id @default(autoincrement())
+  userId      Int       @map("user_id")
+  phoneNumber String    @map("phone_number")
+  codeHash    String    @map("code_hash")
+  expiresAt   DateTime  @map("expires_at")
+  consumedAt  DateTime? @map("consumed_at")
+  attempts    Int       @default(0)
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, phoneNumber, consumedAt])
+  @@index([expiresAt])
+  @@map("phone_verification_codes")
+}
+
+model PasswordResetToken {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("password_reset_tokens")
+}
+
+model VerificationCode {
+  id          Int       @id @default(autoincrement())
+  email       String?
+  phoneNumber String?   @map("phone_number")
+  code        String
+  channel     String
+  purpose     String    @default("register")
+  expiresAt   DateTime  @map("expires_at")
+  consumedAt  DateTime? @map("consumed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([email])
+  @@index([phoneNumber])
+  @@index([purpose, channel])
+  @@map("verification_codes")
+}
+
+model AuthEvent {
+  id          Int      @id @default(autoincrement())
+  userId      String?  @map("user_id")
+  email       String?
+  phoneNumber String?  @map("phone_number")
+  eventType   String   @map("event_type")
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([email])
+  @@index([eventType])
+  @@map("auth_events")
+}
+
+model PendingProfile {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @unique @map("user_id")
+  payload   Json
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("pending_profiles")
+}
+
+model UserProfile {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @unique @map("user_id")
+  payload   Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
