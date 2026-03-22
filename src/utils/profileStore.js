@@ -44,6 +44,11 @@ const PROFILE_FIELDS = [
   "toolsTechnologies",
   "preferredSkills",
   "industriesOfInterest",
+  "experiences",
+  "education",
+  "certifications",
+  "packages",
+  "pastProjects",
   "hourlyRate",
   "currency",
   "serviceMode",
@@ -54,6 +59,10 @@ const PROFILE_FIELDS = [
   "serviceRadius",
   "yearsOfExperience",
   "skillLevel",
+  "licenseNumber",
+  "insured",
+  "bonded",
+  "availability",
   "availabilityType",
   "preferredProjectType",
   "responseTime",
@@ -99,6 +108,12 @@ const PROFILE_FIELDS = [
   "introVideoTitle",
   "introVideoDescription",
   "preferredFreelancerLevel",
+  "paymentVerified",
+  "topRated",
+  "risingTalent",
+  "averageRating",
+  "completedJobs",
+  "repeatClients",
 ];
 
 const sanitizeProfileInput = (input = {}) => {
@@ -146,6 +161,11 @@ const mapDbProfileToApi = (user, payload = {}) => {
     toolsTechnologies: normalizeArray(profile.toolsTechnologies),
     preferredSkills: normalizeArray(profile.preferredSkills),
     industriesOfInterest: normalizeArray(profile.industriesOfInterest),
+    experiences: normalizeArray(profile.experiences),
+    education: normalizeArray(profile.education),
+    certifications: normalizeArray(profile.certifications),
+    packages: normalizeArray(profile.packages),
+    pastProjects: normalizeArray(profile.pastProjects),
     hourlyRate: toNumber(profile.hourlyRate, 10),
     currency: profile.currency || "USD",
     serviceMode: profile.serviceMode || "",
@@ -156,6 +176,10 @@ const mapDbProfileToApi = (user, payload = {}) => {
     serviceRadius: toNumber(profile.serviceRadius, 0),
     yearsOfExperience: toNumber(profile.yearsOfExperience, 0),
     skillLevel: profile.skillLevel || "",
+    licenseNumber: profile.licenseNumber || "",
+    insured: Boolean(profile.insured),
+    bonded: Boolean(profile.bonded),
+    availability: profile.availability || "",
     availabilityType: profile.availabilityType || "",
     preferredProjectType: profile.preferredProjectType || "",
     responseTime: profile.responseTime || "",
@@ -201,6 +225,16 @@ const mapDbProfileToApi = (user, payload = {}) => {
     introVideoTitle: profile.introVideoTitle || "",
     introVideoDescription: profile.introVideoDescription || "",
     preferredFreelancerLevel: profile.preferredFreelancerLevel || "",
+    paymentVerified: Boolean(profile.paymentVerified),
+    topRated: Boolean(profile.topRated),
+    risingTalent: Boolean(profile.risingTalent),
+    averageRating: toNumber(profile.averageRating, 0),
+    completedJobs: toNumber(profile.completedJobs, 0),
+    repeatClients: toNumber(profile.repeatClients, 0),
+    profileCompleted: Boolean(user.profileCompleted),
+    lastProfileUpdate: user.lastProfileUpdate || null,
+    reminderSent: Boolean(user.reminderSent),
+    isActive: Boolean(user.isActive),
     emailVerified: Boolean(user.emailVerified),
     phoneVerified: Boolean(user.phoneVerified),
     isVerified: Boolean(user.isVerified),
@@ -242,6 +276,12 @@ const updateMyProfile = async (userId, input = {}) => {
       sanitized.preferredSkills !== undefined ? normalizeArray(sanitized.preferredSkills) : undefined,
     industriesOfInterest:
       sanitized.industriesOfInterest !== undefined ? normalizeArray(sanitized.industriesOfInterest) : undefined,
+    experiences: sanitized.experiences !== undefined ? normalizeArray(sanitized.experiences) : undefined,
+    education: sanitized.education !== undefined ? normalizeArray(sanitized.education) : undefined,
+    certifications:
+      sanitized.certifications !== undefined ? normalizeArray(sanitized.certifications) : undefined,
+    packages: sanitized.packages !== undefined ? normalizeArray(sanitized.packages) : undefined,
+    pastProjects: sanitized.pastProjects !== undefined ? normalizeArray(sanitized.pastProjects) : undefined,
     languages: sanitized.languages !== undefined ? normalizeArray(sanitized.languages) : undefined,
     portfolio: sanitized.portfolio !== undefined ? normalizeArray(sanitized.portfolio) : undefined,
     portfolioFileNames:
@@ -258,6 +298,12 @@ const updateMyProfile = async (userId, input = {}) => {
       sanitized.portfolioTechnologies !== undefined ? normalizeArray(sanitized.portfolioTechnologies) : undefined,
     portfolioVideos:
       sanitized.portfolioVideos !== undefined ? normalizeArray(sanitized.portfolioVideos) : undefined,
+    paymentVerified: sanitized.paymentVerified,
+    topRated: sanitized.topRated,
+    risingTalent: sanitized.risingTalent,
+    averageRating: sanitized.averageRating,
+    completedJobs: sanitized.completedJobs,
+    repeatClients: sanitized.repeatClients,
   };
 
   const data = Object.fromEntries(
@@ -279,6 +325,73 @@ const updateMyProfile = async (userId, input = {}) => {
 
   const payload = await getProfilePayload(userId);
   return mapDbProfileToApi(existing, payload);
+};
+
+const getPortfolioState = (profile = {}) => ({
+  portfolio: normalizeArray(profile.portfolio),
+  portfolioFileNames: normalizeArray(profile.portfolioFileNames),
+  portfolioTitles: normalizeArray(profile.portfolioTitles),
+  portfolioDescriptions: normalizeArray(profile.portfolioDescriptions),
+  portfolioLinks: normalizeArray(profile.portfolioLinks),
+  portfolioRoles: normalizeArray(profile.portfolioRoles),
+  portfolioTechnologies: normalizeArray(profile.portfolioTechnologies),
+});
+
+const updatePortfolioItem = async (userId, index, input = {}) => {
+  const existing = await getMyProfile(userId);
+  if (!existing) return null;
+
+  const itemIndex = Number(index);
+  if (!Number.isInteger(itemIndex) || itemIndex < 0) return null;
+
+  const current = getPortfolioState(existing);
+  if (!current.portfolio[itemIndex]) return null;
+
+  const next = {
+    portfolio: [...current.portfolio],
+    portfolioFileNames: [...current.portfolioFileNames],
+    portfolioTitles: [...current.portfolioTitles],
+    portfolioDescriptions: [...current.portfolioDescriptions],
+    portfolioLinks: [...current.portfolioLinks],
+    portfolioRoles: [...current.portfolioRoles],
+    portfolioTechnologies: [...current.portfolioTechnologies],
+  };
+
+  if (input.url !== undefined) next.portfolio[itemIndex] = input.url;
+  if (input.name !== undefined) next.portfolioFileNames[itemIndex] = input.name;
+  if (input.title !== undefined) next.portfolioTitles[itemIndex] = input.title;
+  if (input.description !== undefined) next.portfolioDescriptions[itemIndex] = input.description;
+  if (input.liveLink !== undefined) next.portfolioLinks[itemIndex] = input.liveLink;
+  if (input.role !== undefined) next.portfolioRoles[itemIndex] = input.role;
+  if (input.technologies !== undefined) {
+    next.portfolioTechnologies[itemIndex] = normalizeArray(input.technologies);
+  }
+
+  return updateMyProfile(userId, next);
+};
+
+const deletePortfolioItem = async (userId, index) => {
+  const existing = await getMyProfile(userId);
+  if (!existing) return null;
+
+  const itemIndex = Number(index);
+  if (!Number.isInteger(itemIndex) || itemIndex < 0) return null;
+
+  const current = getPortfolioState(existing);
+  if (!current.portfolio[itemIndex]) return null;
+
+  const next = {
+    portfolio: [...current.portfolio],
+    portfolioFileNames: [...current.portfolioFileNames],
+    portfolioTitles: [...current.portfolioTitles],
+    portfolioDescriptions: [...current.portfolioDescriptions],
+    portfolioLinks: [...current.portfolioLinks],
+    portfolioRoles: [...current.portfolioRoles],
+    portfolioTechnologies: [...current.portfolioTechnologies],
+  };
+
+  Object.values(next).forEach((arr) => arr.splice(itemIndex, 1));
+  return updateMyProfile(userId, next);
 };
 
 const savePendingProfile = async (userId, input = {}) => {
@@ -351,7 +464,10 @@ module.exports = {
   ensureProfileColumns,
   getMyProfile,
   updateMyProfile,
+  updatePortfolioItem,
+  deletePortfolioItem,
   savePendingProfile,
   applyPendingProfile,
   sanitizeProfileInput,
+  mapDbProfileToApi,
 };

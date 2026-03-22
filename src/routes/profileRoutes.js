@@ -16,5 +16,7 @@ router.post("/me/cover-photo", protect, uploadAvatar.single("coverPhoto"), contr
 router.post("/me/company-logo", protect, uploadAvatar.single("companyLogo"), controller.uploadCompanyLogo);
 router.post("/me/intro-video", protect, uploadVideo.single("introVideo"), controller.uploadIntroVideo);
 router.post("/me/portfolio", protect, uploadPortfolio.array("files", 10), controller.uploadPortfolio);
+router.patch("/me/portfolio/:index", protect, controller.updatePortfolioItem);
+router.delete("/me/portfolio/:index", protect, controller.deletePortfolioItem);
 
 module.exports = router;

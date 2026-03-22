@@ -22,6 +22,7 @@ const analyticsRoutes = require("./routes/analyticsRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const graphqlRoutes = require("./routes/graphqlRoutes");
 const profileRoutes = require("./routes/profileRoutes");
+const talentRoutes = require("./routes/talentRoutes");
 
 const app = express();
 
@@ -72,6 +73,7 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/graphql", graphqlRoutes);
 app.use("/api/profile", profileRoutes);
+app.use("/api/talents", talentRoutes);
 
 // ─── Error Handling ───────────────────────────────────────────────────────────
 app.use(notFound);

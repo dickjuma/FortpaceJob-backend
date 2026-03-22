@@ -8,6 +8,8 @@ const {
   getMyProfile,
   updateMyProfile: updateMyProfileUtil,
   sanitizeProfileInput,
+  updatePortfolioItem: updatePortfolioItemUtil,
+  deletePortfolioItem: deletePortfolioItemUtil,
 } = require("../utils/profileStore");
 const { prisma } = require("../config/db");
 const { checkProfileCompletion } = require("../utils/profileCompletion");
@@ -161,6 +163,30 @@ exports.uploadPortfolio = async (req, res, next) => {
       portfolioFileNames: [...currentNames, ...fileNames],
     });
     return res.json({ success: true, message: "Portfolio uploaded.", user: updated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updatePortfolioItem = async (req, res, next) => {
+  try {
+    const updated = await updatePortfolioItemUtil(req.user.id, req.params.index, req.body || {});
+    if (!updated) {
+      return res.status(404).json({ success: false, message: "Portfolio item not found." });
+    }
+    return res.json({ success: true, message: "Portfolio item updated.", user: updated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.deletePortfolioItem = async (req, res, next) => {
+  try {
+    const updated = await deletePortfolioItemUtil(req.user.id, req.params.index);
+    if (!updated) {
+      return res.status(404).json({ success: false, message: "Portfolio item not found." });
+    }
+    return res.json({ success: true, message: "Portfolio item removed.", user: updated });
   } catch (error) {
     next(error);
   }
