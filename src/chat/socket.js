@@ -2,6 +2,7 @@ const { Server } = require("socket.io");
 const { verifyToken } = require("../utils/jwt");
 const User = require("../models/User");
 const logger = require("../utils/logger");
+const { getAllowedOrigins } = require("../config/origins");
 // Optional: add your Conversation and Message models when ready
 // const Conversation = require("../models/Conversation");
 // const Message = require("../models/Message");
@@ -59,9 +60,11 @@ const isValidConversationId = (conversationId) => {
 };
 
 const initSocket = (server) => {
+  const allowedOrigins = getAllowedOrigins();
+
   io = new Server(server, {
     cors: {
-      origin: process.env.CLIENT_URL || "http://localhost:3000",
+      origin: allowedOrigins,
       methods: ["GET", "POST"],
       credentials: true,
     },

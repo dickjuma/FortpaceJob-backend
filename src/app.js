@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const { errorHandler, notFound } = require("./middlewares/errorHandler");
+const { getAllowedOrigins } = require("./config/origins");
 
 // Route imports
 const authRoutes = require("./routes/authRoutes");
@@ -25,8 +26,15 @@ const profileRoutes = require("./routes/profileRoutes");
 const app = express();
 
 // ─── Global Middlewares ───────────────────────────────────────────────────────
+const allowedOrigins = getAllowedOrigins();
 app.use(cors({
-  origin: process.env.CLIENT_URL || "http://localhost:3000",
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
   credentials: true,
 }));
 
