@@ -120,7 +120,7 @@ const buildVerificationResponse = async ({ user, message }) => {
 };
 
 const shouldActivateUser = (user) =>
-  Boolean(user.emailVerified) && (Boolean(user.phoneVerified) || Boolean(user.smsBlocked) || !user.phoneNumber);
+  Boolean(user.emailVerified) && (Boolean(user.phoneVerified) || !user.phoneNumber);
 
 
 // ==================== Original Exports (Preserved) ====================
@@ -180,7 +180,6 @@ exports.register = async (req, res, next) => {
           phoneVerified: false,
           emailVerified: false,
           isVerified: false,
-          smsBlocked: false,
           profileCompleted: false,
           reminderSent: false,
           lastProfileUpdate: new Date(),
@@ -193,22 +192,15 @@ exports.register = async (req, res, next) => {
 
     
     if (user.phoneNumber && !user.phoneVerified) {
-      if (!user.smsBlocked) {
-        const phoneOtp = await createOtp({
-          userId: user.id,
-          channel: "sms",
-          purpose: "verify_phone",
-        });
-        const smsResult = await sendOtpSms({ phoneNumber: user.phoneNumber, otp: phoneOtp });
-        if (smsResult.success) {
-          channelsSent.push("sms");
-          phoneVerificationChannel = "sms";
-        } else if (smsResult.blacklisted) {
-          user = await prisma.user.update({
-            where: { id: user.id },
-            data: { smsBlocked: true },
-          });
-        }
+      const phoneOtp = await createOtp({
+        userId: user.id,
+        channel: "sms",
+        purpose: "verify_phone",
+      });
+      const smsResult = await sendOtpSms({ phoneNumber: user.phoneNumber, otp: phoneOtp });
+      if (smsResult.success) {
+        channelsSent.push("sms");
+        phoneVerificationChannel = "sms";
       }
 
       if (!phoneVerificationChannel) {
@@ -442,15 +434,10 @@ exports.resendOTP = async (req, res, next) => {
         return res.status(400).json({ success: false, message: "No phone number is linked to this account." });
       }
 
-      if (!user.smsBlocked) {
-        const otp = await createOtp({ userId: user.id, channel: "sms", purpose });
-        const smsResult = await sendOtpSms({ phoneNumber: user.phoneNumber, otp });
-        if (smsResult.success) {
-          return res.json({ success: true, message: "OTP resent to your phone number.", channelUsed: "sms" });
-        }
-        if (smsResult.blacklisted) {
-          user = await prisma.user.update({ where: { id: user.id }, data: { smsBlocked: true } });
-        }
+      const otp = await createOtp({ userId: user.id, channel: "sms", purpose });
+      const smsResult = await sendOtpSms({ phoneNumber: user.phoneNumber, otp });
+      if (smsResult.success) {
+        return res.json({ success: true, message: "OTP resent to your phone number.", channelUsed: "sms" });
       }
 
       if (!user.email) {
@@ -494,15 +481,10 @@ exports.sendLoginOTP = async (req, res, next) => {
       return res.status(403).json({ success: false, message: "Account is inactive. Verify your email and phone first." });
     }
 
-    if (!user.smsBlocked) {
-      const otp = await createOtp({ userId: user.id, channel: "sms", purpose: "login_phone" });
-      const smsResult = await sendOtpSms({ phoneNumber: user.phoneNumber, otp });
-      if (smsResult.success) {
-        return res.json({ success: true, message: "OTP sent to your phone.", channelUsed: "sms" });
-      }
-      if (smsResult.blacklisted) {
-        await prisma.user.update({ where: { id: user.id }, data: { smsBlocked: true } });
-      }
+    const otp = await createOtp({ userId: user.id, channel: "sms", purpose: "login_phone" });
+    const smsResult = await sendOtpSms({ phoneNumber: user.phoneNumber, otp });
+    if (smsResult.success) {
+      return res.json({ success: true, message: "OTP sent to your phone.", channelUsed: "sms" });
     }
 
     if (!user.email) {
@@ -794,7 +776,6 @@ exports.googleAuthCallback = async (req, res, next) => {
           isActive: true,
           phoneVerified: false,
           emailVerified: true,
-          smsBlocked: false,
         },
       });
 
