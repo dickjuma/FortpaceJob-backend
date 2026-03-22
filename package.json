@@ -4,10 +4,12 @@
   "description": "Forte Platform — Backend API (Node.js / Express / Supabase PostgreSQL)",
   "main": "server.js",
   "scripts": {
+    "prestart": "prisma generate",
     "start": "node server.js",
     "dev": "nodemon server.js",
     "lint": "eslint src/**/*.js",
     "format": "prettier --write src/**/*.js",
+    "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:migrate": "prisma migrate dev",
