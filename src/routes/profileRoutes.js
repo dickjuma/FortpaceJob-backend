@@ -5,9 +5,14 @@ const controller = require("../controllers/profileController");
 
 const router = express.Router();
 
+// New Profile Completion Routes
+router.put("/", protect, controller.updateProfile);
+router.get("/missing-fields", protect, controller.getMissingFields);
+
 router.get("/me", protect, controller.getMyProfile);
 router.patch("/me", protect, controller.updateMyProfile);
 router.post("/me/avatar", protect, uploadAvatar.single("avatar"), controller.uploadAvatar);
+router.post("/me/cover-photo", protect, uploadAvatar.single("coverPhoto"), controller.uploadCoverPhoto);
 router.post("/me/company-logo", protect, uploadAvatar.single("companyLogo"), controller.uploadCompanyLogo);
 router.post("/me/intro-video", protect, uploadVideo.single("introVideo"), controller.uploadIntroVideo);
 router.post("/me/portfolio", protect, uploadPortfolio.array("files", 10), controller.uploadPortfolio);

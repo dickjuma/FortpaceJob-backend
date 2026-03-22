@@ -136,6 +136,22 @@ const sendPasswordResetEmail = (user, resetToken) =>
     `,
   });
 
+const sendPasswordResetOtpEmail = (user, otp) =>
+  sendEmail({
+    to: user.email,
+    subject: "Reset your Forte password",
+    text: `Your Forte password reset code is ${otp}. It expires in 5 minutes.`,
+    html: `
+      <div style="font-family:sans-serif;max-width:600px;margin:auto">
+        <h2 style="color:#C9452F">Password Reset Code</h2>
+        <p>Your password reset code is:</p>
+        <p><strong style="font-size:24px;letter-spacing:4px">${otp}</strong></p>
+        <p>This code expires in 5 minutes.</p>
+        <p style="color:#999;margin-top:24px;font-size:12px">If you didn't request this, ignore this email.</p>
+      </div>
+    `,
+  });
+
 const sendProposalNotification = (client, freelancer, gig) =>
   sendEmail({
     to: client.email,
@@ -172,12 +188,12 @@ const sendVerificationEmail = (user, otp) =>
   sendEmail({
     to: user.email,
     subject: "Verify your Forte account",
-    text: `Your Forte verification code is ${otp}. It expires in 10 minutes.`,
+    text: `Your Forte verification code is ${otp}. It expires in 5 minutes.`,
     html: `
       <div style="font-family:sans-serif;max-width:600px;margin:auto">
         <h2 style="color:#C9452F">Verify Your Email</h2>
         <p>Your verification code is: <strong style="font-size:24px;letter-spacing:4px">${otp}</strong></p>
-        <p>This code expires in 10 minutes.</p>
+        <p>This code expires in 5 minutes.</p>
         <p style="color:#999;margin-top:24px;font-size:12px">If you didn't create an account, ignore this email.</p>
       </div>
     `,
@@ -199,6 +215,22 @@ const sendLoginAlertEmail = (user, metadata = {}) =>
     `,
   });
 
+const sendPasswordChangedEmail = (user, metadata = {}) =>
+  sendEmail({
+    to: user.email,
+    subject: "Your Forte password was changed",
+    html: `
+      <div style="font-family:sans-serif;max-width:600px;margin:auto">
+        <h2 style="color:#C9452F">Password Changed</h2>
+        <p>Hello ${user.name || user.companyName || "User"}, your password was just changed.</p>
+        <p><strong>Time:</strong> ${metadata.time || new Date().toISOString()}</p>
+        <p><strong>IP:</strong> ${metadata.ip || "Unknown"}</p>
+        <p><strong>Device:</strong> ${metadata.userAgent || "Unknown"}</p>
+        <p style="color:#999;margin-top:24px;font-size:12px">If this was not you, reset your password immediately or contact support.</p>
+      </div>
+    `,
+  });
+
 module.exports = {
   sendEmail,
   sendWelcomeEmail,
@@ -207,5 +239,7 @@ module.exports = {
   sendContractStartedEmail,
   sendVerificationEmail,
   sendLoginAlertEmail,
+  sendPasswordChangedEmail,
+  sendPasswordResetOtpEmail,
   verifyResendConnection,
 };

@@ -8,7 +8,7 @@ const parseUploadLimitMb = (envName, fallback) => {
 };
 
 const AVATAR_LIMIT_MB = parseUploadLimitMb("MAX_AVATAR_MB", 5);
-const PORTFOLIO_LIMIT_MB = parseUploadLimitMb("MAX_PORTFOLIO_FILE_MB", 20);
+const PORTFOLIO_LIMIT_MB = parseUploadLimitMb("MAX_PORTFOLIO_FILE_MB", 100);
 const INTRO_VIDEO_LIMIT_MB = parseUploadLimitMb("MAX_INTRO_VIDEO_MB", 500);
 
 // ─── All uploads use memory storage; files are streamed to Cloudinary ─────────

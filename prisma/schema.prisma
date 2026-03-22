@@ -12,7 +12,7 @@ datasource db {
 
 model User {
   id              Int      @id @default(autoincrement())
-  email           String   @unique
+  email           String?  @unique
   phoneNumber     String?  @unique @map("phone_number")
   password        String?
   role            String?
@@ -20,16 +20,57 @@ model User {
   phoneVerified   Boolean  @default(false) @map("phone_verified")
   emailVerified   Boolean  @default(false) @map("email_verified")
   isVerified      Boolean  @default(false) @map("is_verified")
+  smsBlocked      Boolean  @default(false) @map("sms_blocked")
+  lastProfileUpdate DateTime? @map("last_profile_update")
+  reminderSent    Boolean  @default(false) @map("reminder_sent")
+  profileCompleted Boolean  @default(false) @map("profile_completed")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   authProviders          AuthProvider[]
   phoneVerificationCodes PhoneVerificationCode[]
   passwordResetTokens    PasswordResetToken[]
+  otpCodes               OtpCode[]
   pendingProfile         PendingProfile?
   profile                UserProfile?
 
+  gigs            Gig[]
+  buyerRequests   BuyerRequest[]
+  proposals       Proposal[]
+  clientContracts Contract[] @relation("ClientContracts")
+  freelancerContracts Contract[] @relation("FreelancerContracts")
+  reviewsWritten  Review[] @relation("Reviewer")
+  reviewsReceived Review[] @relation("Reviewee")
+  conversationParticipants ConversationParticipant[]
+  messagesSent    Message[]
+  notificationsReceived Notification[] @relation("NotificationsReceived")
+  notificationsTriggered Notification[] @relation("NotificationsTriggered")
+  wallet          Wallet?
+  transactions    Transaction[]
+  disputesOpened  Dispute[] @relation("OpenedDisputes")
+  disputesAgainst Dispute[] @relation("DisputesAgainst")
+  disputesResolved Dispute[] @relation("ResolvedDisputes")
+  subscription    Subscription?
+
   @@map("users")
+}
+
+model OtpCode {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  codeHash  String    @map("code_hash")
+  channel   String
+  purpose   String
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, channel, purpose])
+  @@index([expiresAt])
+  @@map("otp_codes")
 }
 
 model AuthProvider {
@@ -131,4 +172,339 @@ model UserProfile {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_profiles")
+}
+
+model Gig {
+  id              Int      @id @default(autoincrement())
+  sellerId        Int      @map("seller_id")
+  title           String
+  slug            String?  @unique
+  category        String
+  subcategory     String?
+  serviceMode     String   @default("Fully online") @map("service_mode")
+  physicalCategory String? @map("physical_category")
+  serviceArea     String?  @map("service_area")
+  tags            String[]
+  description     String
+  packages        Json
+  images          String[]
+  video           String?
+  faqs            Json?
+  requirements    String[]
+  status          String   @default("draft")
+  isPromoted      Boolean  @default(false) @map("is_promoted")
+  promotionExpiry DateTime? @map("promotion_expiry")
+  views           Int      @default(0)
+  clicks          Int      @default(0)
+  orders          Int      @default(0)
+  completedOrders Int      @default(0) @map("completed_orders")
+  avgRating       Float    @default(0) @map("avg_rating")
+  totalReviews    Int      @default(0) @map("total_reviews")
+  impressions     Int      @default(0)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  seller          User     @relation(fields: [sellerId], references: [id])
+  contracts       Contract[]
+  reviews         Review[]
+  notifications   Notification[]
+
+  @@map("gigs")
+}
+
+model BuyerRequest {
+  id              Int      @id @default(autoincrement())
+  buyerId         Int      @map("buyer_id")
+  title           String
+  description     String
+  category        String
+  subcategory     String?
+  serviceMode     String   @default("Fully online") @map("service_mode")
+  location        String   @default("Remote")
+  tags            String[]
+  budgetMin       Float    @map("budget_min")
+  budgetMax       Float    @map("budget_max")
+  currency        String   @default("USD")
+  deadline        DateTime?
+  isUrgent        Boolean  @default(false) @map("is_urgent")
+  status          String   @default("open")
+  expiresAt       DateTime @default(dbgenerated("NOW() + interval '30 days'")) @map("expires_at")
+  proposalCount   Int      @default(0) @map("proposal_count")
+  views           Int      @default(0)
+  matchScore      Float    @default(0) @map("match_score")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  buyer           User     @relation(fields: [buyerId], references: [id])
+  proposals       Proposal[]
+  contracts       Contract[]
+
+  @@map("buyer_requests")
+}
+
+model Proposal {
+  id              Int      @id @default(autoincrement())
+  freelancerId    Int      @map("freelancer_id")
+  buyerRequestId  Int      @map("buyer_request_id")
+  coverLetter     String   @map("cover_letter")
+  bidAmount       Float    @map("bid_amount")
+  currency        String   @default("USD")
+  deliveryDays    Int      @map("delivery_days")
+  attachments     String[]
+  status          String   @default("pending")
+  isRead          Boolean  @default(false) @map("is_read")
+  clientNote      String?  @map("client_note")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  freelancer      User     @relation(fields: [freelancerId], references: [id])
+  buyerRequest    BuyerRequest @relation(fields: [buyerRequestId], references: [id])
+  contracts       Contract[]
+  notifications   Notification[]
+
+  @@unique([freelancerId, buyerRequestId])
+  @@map("proposals")
+}
+
+model Contract {
+  id              Int      @id @default(autoincrement())
+  title           String
+  clientId        Int      @map("client_id")
+  freelancerId    Int      @map("freelancer_id")
+  gigId           Int?     @map("gig_id")
+  buyerRequestId  Int?     @map("buyer_request_id")
+  proposalId      Int?     @map("proposal_id")
+  totalAmount     Float    @map("total_amount")
+  platformFee     Float    @map("platform_fee")
+  freelancerEarnings Float @map("freelancer_earnings")
+  currency        String   @default("USD")
+  paymentStatus   String   @default("pending") @map("payment_status")
+  stripePaymentIntentId String? @map("stripe_payment_intent_id")
+  deliveryDays    Int      @map("delivery_days")
+  startDate       DateTime? @map("start_date")
+  dueDate         DateTime? @map("due_date")
+  deliveredAt     DateTime? @map("delivered_at")
+  completedAt     DateTime? @map("completed_at")
+  status          String   @default("pending_payment")
+  cancellationReason String? @map("cancellation_reason")
+  disputeReason   String?  @map("dispute_reason")
+  revisionCount   Int      @default(0) @map("revision_count")
+  maxRevisions    Int      @default(1) @map("max_revisions")
+  milestones      Json?
+  requirements    String?
+  deliverables    String[]
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  client          User     @relation("ClientContracts", fields: [clientId], references: [id])
+  freelancer      User     @relation("FreelancerContracts", fields: [freelancerId], references: [id])
+  gig             Gig?     @relation(fields: [gigId], references: [id])
+  buyerRequest    BuyerRequest? @relation(fields: [buyerRequestId], references: [id])
+  proposal        Proposal? @relation(fields: [proposalId], references: [id])
+  reviews         Review[]
+  disputes        Dispute[]
+  transactions    Transaction[]
+  notifications   Notification[]
+  conversations   Conversation[]
+
+  @@map("contracts")
+}
+
+model Review {
+  id              Int      @id @default(autoincrement())
+  contractId      Int      @map("contract_id")
+  gigId           Int?     @map("gig_id")
+  reviewerId      Int      @map("reviewer_id")
+  revieweeId      Int      @map("reviewee_id")
+  rating          Int
+  comment         String?
+  communication   Int?
+  quality         Int?
+  delivery        Int?
+  value           Int?
+  response        String?
+  respondedAt     DateTime? @map("responded_at")
+  isPublic        Boolean  @default(true) @map("is_public")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  contract        Contract @relation(fields: [contractId], references: [id])
+  gig             Gig?     @relation(fields: [gigId], references: [id])
+  reviewer        User     @relation("Reviewer", fields: [reviewerId], references: [id])
+  reviewee        User     @relation("Reviewee", fields: [revieweeId], references: [id])
+
+  @@unique([contractId, reviewerId])
+  @@map("reviews")
+}
+
+model Conversation {
+  id              Int      @id @default(autoincrement())
+  contractId      Int?     @map("contract_id")
+  lastMessageId   Int?     @map("last_message_id")
+  lastMessageAt   DateTime? @map("last_message_at")
+  unreadCount     Json?    @map("unread_count")
+  isArchived      Boolean  @default(false) @map("is_archived")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  contract        Contract? @relation(fields: [contractId], references: [id])
+  messages        Message[]
+  participants    ConversationParticipant[]
+
+  @@map("conversations")
+}
+
+model ConversationParticipant {
+  conversationId  Int      @map("conversation_id")
+  userId          Int      @map("user_id")
+  
+  conversation    Conversation @relation(fields: [conversationId], references: [id])
+  user            User         @relation(fields: [userId], references: [id])
+
+  @@id([conversationId, userId])
+  @@map("conversation_participants")
+}
+
+model Message {
+  id              Int      @id @default(autoincrement())
+  conversationId  Int      @map("conversation_id")
+  senderId        Int      @map("sender_id")
+  content         String?
+  attachments     Json?
+  type            String   @default("text")
+  offerDetails    Json?    @map("offer_details")
+  isRead          Boolean  @default(false) @map("is_read")
+  readAt          DateTime? @map("read_at")
+  isDeleted       Boolean  @default(false) @map("is_deleted")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  conversation    Conversation @relation(fields: [conversationId], references: [id])
+  sender          User         @relation(fields: [senderId], references: [id])
+
+  @@map("messages")
+}
+
+model Notification {
+  id              Int      @id @default(autoincrement())
+  recipientId     Int      @map("recipient_id")
+  type            String
+  title           String
+  body            String
+  link            String?
+  isRead          Boolean  @default(false) @map("is_read")
+  readAt          DateTime? @map("read_at")
+  relatedUserId   Int?     @map("related_user_id")
+  relatedGigId    Int?     @map("related_gig_id")
+  relatedContractId Int?   @map("related_contract_id")
+  relatedProposalId Int?   @map("related_proposal_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  recipient       User     @relation("NotificationsReceived", fields: [recipientId], references: [id])
+  relatedUser     User?    @relation("NotificationsTriggered", fields: [relatedUserId], references: [id])
+  relatedGig      Gig?     @relation(fields: [relatedGigId], references: [id])
+  relatedContract Contract? @relation(fields: [relatedContractId], references: [id])
+  relatedProposal Proposal? @relation(fields: [relatedProposalId], references: [id])
+
+  @@map("notifications")
+}
+
+model Wallet {
+  id              Int      @id @default(autoincrement())
+  userId          Int      @unique @map("user_id")
+  balance         Float    @default(0)
+  pendingBalance  Float    @default(0) @map("pending_balance")
+  currency        String   @default("USD")
+  totalEarned     Float    @default(0) @map("total_earned")
+  totalWithdrawn  Float    @default(0) @map("total_withdrawn")
+  withdrawalMethod String? @map("withdrawal_method")
+  withdrawalDetails Json?  @map("withdrawal_details")
+  stripeAccountId String?  @map("stripe_account_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user            User     @relation(fields: [userId], references: [id])
+  transactions    Transaction[]
+
+  @@map("wallets")
+}
+
+model Transaction {
+  id              Int      @id @default(autoincrement())
+  walletId        Int      @map("wallet_id")
+  userId          Int      @map("user_id")
+  contractId      Int?     @map("contract_id")
+  type            String
+  amount          Float
+  currency        String   @default("USD")
+  description     String?
+  status          String   @default("completed")
+  stripePaymentIntentId String? @map("stripe_payment_intent_id")
+  stripeTransferId String? @map("stripe_transfer_id")
+  reference       String?
+  balanceBefore   Float?   @map("balance_before")
+  balanceAfter    Float?   @map("balance_after")
+  mpesaCheckoutId String?  @map("mpesa_checkout_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  wallet          Wallet   @relation(fields: [walletId], references: [id])
+  user            User     @relation(fields: [userId], references: [id])
+  contract        Contract? @relation(fields: [contractId], references: [id])
+
+  @@map("transactions")
+}
+
+model Dispute {
+  id              Int      @id @default(autoincrement())
+  contractId      Int      @map("contract_id")
+  openedById      Int      @map("opened_by_id")
+  againstId       Int      @map("against_id")
+  reason          String
+  description     String
+  attachments     String[]
+  status          String   @default("open")
+  resolution      String?
+  resolutionAmount Float?  @map("resolution_amount")
+  resolutionNotes String?  @map("resolution_notes")
+  resolvedById    Int?     @map("resolved_by_id")
+  resolvedAt      DateTime? @map("resolved_at")
+  messages        Json?
+  lastActivityAt  DateTime @default(now()) @map("last_activity_at")
+  adminAssignedAt DateTime? @map("admin_assigned_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  contract        Contract @relation(fields: [contractId], references: [id])
+  openedBy        User     @relation("OpenedDisputes", fields: [openedById], references: [id])
+  against         User     @relation("DisputesAgainst", fields: [againstId], references: [id])
+  resolvedBy      User?    @relation("ResolvedDisputes", fields: [resolvedById], references: [id])
+
+  @@map("disputes")
+}
+
+model Subscription {
+  id              Int      @id @default(autoincrement())
+  userId          Int      @unique @map("user_id")
+  plan            String   @default("free")
+  status          String   @default("active")
+  billingCycle    String   @default("monthly") @map("billing_cycle")
+  startDate       DateTime @map("start_date")
+  endDate         DateTime @map("end_date")
+  nextBillingDate DateTime? @map("next_billing_date")
+  stripeSubscriptionId String? @map("stripe_subscription_id")
+  stripeCustomerId String? @map("stripe_customer_id")
+  paymentMethod   String   @default("stripe") @map("payment_method")
+  features        Json?
+  usage           Json?
+  cancelledAt     DateTime? @map("cancelled_at")
+  cancellationReason String? @map("cancellation_reason")
+  autoRenew       Boolean  @default(true) @map("auto_renew")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user            User     @relation(fields: [userId], references: [id])
+
+  @@map("subscriptions")
 }

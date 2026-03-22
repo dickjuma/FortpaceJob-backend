@@ -1,5 +1,6 @@
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+const axios = require("axios");
 const {
   generateAccessToken,
   generateRefreshToken,
@@ -7,44 +8,68 @@ const {
 } = require("../utils/jwt");
 const {
   sendWelcomeEmail,
-  sendVerificationEmail,
-  sendPasswordResetEmail,
   sendLoginAlertEmail,
+  sendPasswordChangedEmail,
 } = require("../utils/email");
 const { sanitizeUser } = require("../utils/helpers");
-const {
-  sendOTPViaSMS,
-  sendLoginAlertSMS,
-  sendWelcomeSMS,
-  normalizePhoneNumber,
-} = require("../utils/sms");
+const { sendLoginAlertSMS, sendWelcomeSMS } = require("../utils/sms");
+const { normalizePhoneNumber, isValidPhoneNumber } = require("../utils/phone");
 const { prisma } = require("../config/db");
-const { savePendingProfile, applyPendingProfile, getMyProfile, updateMyProfile } = require("../utils/profileStore");
+const { applyPendingProfile, getMyProfile, updateMyProfile } = require("../utils/profileStore");
+const { createOtp, verifyOtp } = require("../services/otpService");
+const { sendOtpSms } = require("../services/smsService");
+const { sendOtpEmail, sendPasswordResetOtpEmail } = require("../services/emailService");
 
-const OTP_TTL_MINUTES = 10;
-const OTP_TTL_MS = OTP_TTL_MINUTES * 60 * 1000;
-const RESET_TTL_MS = 60 * 60 * 1000;
-const OTP_RESEND_LIMIT_PER_HOUR = 3;
-const OTP_MAX_ATTEMPTS = 5;
-const OTP_RESEND_DELAY_SECONDS = 30; // minimum wait between resend requests
+// ==================== Constants ====================
 
+// ==================== Helper Functions ====================
 const parseRole = (role) => {
   if (!role) return "freelancer";
   return ["freelancer", "client", "admin"].includes(role) ? role : null;
 };
 
-const normalizeEmail = (email = "") => String(email).trim().toLowerCase();
+const normalizeEmail = (email) => {
+  if (!email) return "";
+  return String(email).trim().toLowerCase();
+};
 
 const isValidEmail = (email = "") => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
-const isValidPhoneNumber = (phoneNumber = "") => {
-  const normalized = normalizePhoneNumber(phoneNumber || "");
-  return /^\+?[1-9]\d{7,14}$/.test(normalized);
+const hashResetToken = (value) => crypto.createHash("sha256").update(String(value)).digest("hex");
+
+const signOAuthState = (payload) => {
+  const secret = process.env.JWT_SECRET || "fallback_oauth_state_secret";
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", secret).update(body).digest("base64url");
+  return `${body}.${sig}`;
 };
 
-const hashToken = (value) => crypto.createHash("sha256").update(String(value)).digest("hex");
+const verifyOAuthState = (state) => {
+  if (!state || !state.includes(".")) return false;
+  const [body, sig] = state.split(".");
+  const secret = process.env.JWT_SECRET || "fallback_oauth_state_secret";
+  const expected = crypto.createHmac("sha256", secret).update(body).digest("base64url");
+  if (expected !== sig) return false;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    const ts = Number(payload?.ts || 0);
+    if (!ts) return false;
+    const ageMs = Date.now() - ts;
+    return ageMs >= 0 && ageMs <= 10 * 60 * 1000;
+  } catch (_) {
+    return false;
+  }
+};
 
-const generateNumericOtp = () => String(Math.floor(100000 + Math.random() * 900000));
+const resolveGoogleRedirectUri = () => {
+  if (process.env.GOOGLE_REDIRECT_URI) return process.env.GOOGLE_REDIRECT_URI;
+  const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+  if (isProd && process.env.GOOGLE_REDIRECT_URI_PROD) return process.env.GOOGLE_REDIRECT_URI_PROD;
+  if (!isProd && process.env.GOOGLE_REDIRECT_URI_DEV) return process.env.GOOGLE_REDIRECT_URI_DEV;
+  return "";
+};
+
+
 
 const buildSafeUser = (user) => sanitizeUser({ ...user });
 
@@ -60,7 +85,7 @@ const buildUserResponse = async (user) => {
 
 const resolveDisplayName = async (user, fallback = "") => {
   const profile = await getMyProfile(user.id);
-  return profile?.name || profile?.companyName || fallback || "";
+  return profile?.name || profile?.companyName || fallback || user.email?.split("@")[0] || "User";
 };
 
 const findUserForLogin = async ({ identifier, email, phoneNumber }) => {
@@ -79,234 +104,162 @@ const findUserForLogin = async ({ identifier, email, phoneNumber }) => {
   return prisma.user.findUnique({ where: { email: normalizedEmail } });
 };
 
-const createAndSendVerificationCode = async (user, channel) => {
-  const otp = generateNumericOtp();
-  const payload = {
-    email: channel === "email" ? user.email : null,
-    phoneNumber: channel === "sms" ? user.phoneNumber : null,
-    channel,
-    purpose: "register",
-    code: otp,
-    expiresAt: new Date(Date.now() + OTP_TTL_MS),
+// ==================== OTP Helpers ====================
+
+const buildVerificationResponse = async ({ user, message }) => {
+  const responseUser = await buildUserResponse(user);
+  const base = {
+    success: true,
+    message,
+    user: responseUser,
   };
-
-  await prisma.verificationCode.create({ data: payload });
-
-  if (channel === "sms" && user.phoneNumber) {
-    await sendOTPViaSMS({ phoneNumber: user.phoneNumber, otp });
-  } else if (channel === "email") {
-    const displayName = await resolveDisplayName(user);
-    await sendVerificationEmail({ email: user.email, name: displayName, role: user.role }, otp);
+  if (user.isActive) {
+    return { ...base, ...issueTokens(user.id) };
   }
+  return base;
 };
 
-const createPhoneVerificationCode = async ({ userId, phoneNumber }) => {
-  const otp = generateNumericOtp();
-  await prisma.phoneVerificationCode.create({
-    data: {
-      userId: Number(userId),
-      phoneNumber,
-      codeHash: hashToken(otp),
-      expiresAt: new Date(Date.now() + OTP_TTL_MS),
-    },
-  });
-  return otp;
-};
+const shouldActivateUser = (user) =>
+  Boolean(user.emailVerified) && (Boolean(user.phoneVerified) || Boolean(user.smsBlocked) || !user.phoneNumber);
 
-const createEmailVerificationCode = async ({ userId, email }) => {
-  const otp = generateNumericOtp();
-  await prisma.verificationCode.create({
-    data: {
-      email,
-      channel: "email",
-      purpose: "register",
-      code: otp,
-      expiresAt: new Date(Date.now() + OTP_TTL_MS),
-    },
-  });
-  return otp;
-};
 
-const canSendOtp = async ({ channel, user, phoneNumber }) => {
-  const now = Date.now();
-  const recentWindowStart = new Date(now - OTP_RESEND_DELAY_SECONDS * 1000);
-  const hourWindowStart = new Date(now - 60 * 60 * 1000);
+// ==================== Original Exports (Preserved) ====================
 
-  if (channel === "phone") {
-    const recent = await prisma.phoneVerificationCode.findFirst({
-      where: {
-        userId: user.id,
-        phoneNumber,
-        createdAt: { gte: recentWindowStart },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-    if (recent && !recent.consumedAt) {
-      const waitSeconds = Math.ceil((recent.createdAt.getTime() + OTP_RESEND_DELAY_SECONDS * 1000 - now) / 1000);
-      return {
-        allowed: false,
-        message: `Try again in ${waitSeconds} second${waitSeconds !== 1 ? "s" : ""}.`,
-      };
-    }
-
-    const sentLastHour = await prisma.phoneVerificationCode.count({
-      where: {
-        userId: user.id,
-        phoneNumber,
-        createdAt: { gte: hourWindowStart },
-      },
-    });
-    if (sentLastHour >= OTP_RESEND_LIMIT_PER_HOUR) {
-      return {
-        allowed: false,
-        message: "Too many OTP requests. Please wait before trying again.",
-      };
-    }
-    return { allowed: true };
-  }
-
-  const recent = await prisma.verificationCode.findFirst({
-    where: {
-      email: user.email,
-      channel: "email",
-      createdAt: { gte: recentWindowStart },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-  if (recent && !recent.consumedAt) {
-    const waitSeconds = Math.ceil((recent.createdAt.getTime() + OTP_RESEND_DELAY_SECONDS * 1000 - now) / 1000);
-    return {
-      allowed: false,
-      message: `Try again in ${waitSeconds} second${waitSeconds !== 1 ? "s" : ""}.`,
-    };
-  }
-
-  const sentLastHour = await prisma.verificationCode.count({
-    where: {
-      email: user.email,
-      channel: "email",
-      createdAt: { gte: hourWindowStart },
-    },
-  });
-  if (sentLastHour >= OTP_RESEND_LIMIT_PER_HOUR) {
-    return {
-      allowed: false,
-      message: "Too many OTP requests. Please wait before trying again.",
-    };
-  }
-  return { allowed: true };
-};
-
+// ─── Registration ─────────────────────────────────────────────────────
 exports.register = async (req, res, next) => {
   try {
-    const { role, email, phoneNumber, password, fullName, name, ...profilePayload } = req.body;
-    const normalizedEmail = normalizeEmail(email);
+    const { role, email, phoneNumber, password } = req.body;
+    const normalizedEmail = normalizeEmail(email || "");
     const normalizedPhone = normalizePhoneNumber(phoneNumber || "");
-    const safeRole = parseRole(role);
-    const resolvedName = String(fullName || name || "").trim();
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour expiry
+    const phoneForDb = normalizedPhone || null;
+    const safeRole = parseRole(role) || "freelancer";
 
-    // required fields validation
-    if (!safeRole || !normalizedEmail || !password || !resolvedName) {
-      return res.status(400).json({
-        success: false,
-        message: "Role, name, email, and password are required.",
-      });
+    if (!normalizedEmail && !phoneForDb) {
+      return res.status(400).json({ success: false, message: "Email or phone number is required." });
     }
-    if (!isValidEmail(normalizedEmail)) {
+    if (normalizedEmail && !isValidEmail(normalizedEmail)) {
       return res.status(400).json({ success: false, message: "Provide a valid email address." });
     }
-    if (normalizedPhone && !isValidPhoneNumber(normalizedPhone)) {
+    if (phoneForDb && !isValidPhoneNumber(phoneForDb)) {
       return res.status(400).json({ success: false, message: "Provide a valid phone number in international format." });
     }
-    if (String(password).length < 8) {
+    if (!password || String(password).length < 8) {
       return res.status(400).json({ success: false, message: "Password must be at least 8 characters." });
     }
 
-    // Check for existing user (active or inactive)
-    const existingUser = await prisma.user.findFirst({
-      where: {
-        OR: [{ email: normalizedEmail }, { phoneNumber: normalizedPhone }],
-      },
-    });
-    
-    if (existingUser) {
-      // If user is already active/verified, deny registration
-      if (existingUser.isActive || existingUser.isVerified) {
-        return res.status(409).json({ success: false, message: "Email or phone already registered and verified." });
-      }
-      
-      // If user exists but is not active, we treat it as a retry.
-      // Update password and profile, then resend OTPs.
-      const newHashedPassword = await bcrypt.hash(password, 12);
-      await prisma.user.update({
-        where: { id: existingUser.id },
-        data: { password: newHashedPassword, role: safeRole }
-      });
+    const byEmail = normalizedEmail ? await prisma.user.findUnique({ where: { email: normalizedEmail } }) : null;
+    const byPhone = phoneForDb ? await prisma.user.findUnique({ where: { phoneNumber: phoneForDb } }) : null;
 
-      const profileData = Object.keys(profilePayload).length ? { ...profilePayload, name: resolvedName } : { name: resolvedName };
-      await savePendingProfile(existingUser.id, profileData);
-
-      const resendPhoneOtp = await createPhoneVerificationCode({ userId: existingUser.id, phoneNumber: normalizedPhone });
-      const resendEmailOtp = await createEmailVerificationCode({ userId: existingUser.id, email: normalizedEmail });
-
-      await sendOTPViaSMS({ phoneNumber: normalizedPhone, otp: resendPhoneOtp });
-      await sendVerificationEmail({ email: normalizedEmail, name: resolvedName, role: safeRole }, resendEmailOtp).catch(() => {});
-      
-      return res.status(202).json({
-        success: true,
-        message: "Verification pending. We sent new codes to your email and phone.",
-        userId: existingUser.id,
-        pendingPhoneNumber: normalizedPhone,
-        pendingEmail: normalizedEmail,
+    if (byEmail && byPhone && byEmail.id !== byPhone.id) {
+      return res.status(409).json({
+        success: false,
+        message: "An account already exists with this email or phone. Please sign in instead.",
       });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    let user = byEmail || byPhone;
+
+    if (user) {
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          ...(normalizedEmail && (!user.email || !user.emailVerified) ? { email: normalizedEmail } : {}),
+          ...(phoneForDb && (!user.phoneNumber || !user.phoneVerified) ? { phoneNumber: phoneForDb } : {}),
+          password: await bcrypt.hash(password, 12),
+          role: safeRole,
+        },
+      });
+    } else {
+      user = await prisma.user.create({
+        data: {
+          email: normalizedEmail || null,
+          phoneNumber: phoneForDb,
+          password: await bcrypt.hash(password, 12),
+          role: safeRole,
+          isActive: false,
+          phoneVerified: false,
+          emailVerified: false,
+          isVerified: false,
+          smsBlocked: false,
+          profileCompleted: false,
+          reminderSent: false,
+          lastProfileUpdate: new Date(),
+        },
+      });
+    }
+
+    const channelsSent = [];
+    let phoneVerificationChannel = null;
+
     
-    // Create new User with isActive = false
-    const created = await prisma.user.create({
-      data: {
-        email: normalizedEmail,
-        phoneNumber: normalizedPhone,
-        password: hashedPassword,
-        role: safeRole,
-        isActive: false,
-        phoneVerified: false,
-        emailVerified: false,
-        isVerified: false
-      },
-    });
+    if (user.phoneNumber && !user.phoneVerified) {
+      if (!user.smsBlocked) {
+        const phoneOtp = await createOtp({
+          userId: user.id,
+          channel: "sms",
+          purpose: "verify_phone",
+        });
+        const smsResult = await sendOtpSms({ phoneNumber: user.phoneNumber, otp: phoneOtp });
+        if (smsResult.success) {
+          channelsSent.push("sms");
+          phoneVerificationChannel = "sms";
+        } else if (smsResult.blacklisted) {
+          user = await prisma.user.update({
+            where: { id: user.id },
+            data: { smsBlocked: true },
+          });
+        }
+      }
 
-    // Save pending profile
-    const profileData = Object.keys(profilePayload).length ? { ...profilePayload, name: resolvedName } : { name: resolvedName };
-    await savePendingProfile(created.id, profileData);
+      if (!phoneVerificationChannel) {
+        if (!user.email) {
+          return res.status(400).json({
+            success: false,
+            message: "SMS delivery failed and no email is available for fallback.",
+          });
+        }
+        const fallbackOtp = await createOtp({
+          userId: user.id,
+          channel: "email",
+          purpose: "verify_phone",
+        });
+        await sendOtpEmail({ email: user.email, name: "", role: user.role || "", otp: fallbackOtp });
+        channelsSent.push("email");
+        phoneVerificationChannel = "email";
+      }
+    }
 
-    // Generate AND Store OTPs
-    const phoneOtp = await createPhoneVerificationCode({ userId: created.id, phoneNumber: normalizedPhone });
-    const emailOtp = await createEmailVerificationCode({ userId: created.id, email: normalizedEmail });
-
-    await sendOTPViaSMS({ phoneNumber: normalizedPhone, otp: phoneOtp });
-    await sendVerificationEmail({ email: normalizedEmail, name: resolvedName, role: safeRole }, emailOtp).catch(() => {});
+    if (user.email && !user.emailVerified) {
+      const emailOtp = await createOtp({
+        userId: user.id,
+        channel: "email",
+        purpose: "verify_email",
+      });
+      await sendOtpEmail({ email: user.email, name: "", role: user.role || "", otp: emailOtp });
+      channelsSent.push("email");
+    }
 
     return res.status(201).json({
       success: true,
-      message: "Registration successful. Verify your phone and email using the codes sent to you.",
-      userId: created.id,
-      pendingPhoneNumber: normalizedPhone,
-      pendingEmail: normalizedEmail,
+      message: "Registration successful. Verification codes sent.",
+      userId: user.id,
+      pendingPhoneNumber: user.phoneNumber,
+      pendingEmail: user.email,
+      channelsSent: Array.from(new Set(channelsSent)),
+      phoneVerificationChannel,
     });
   } catch (error) {
     next(error);
   }
 };
-
+// ─── Phone OTP Verification ───────────────────────────────────────────
 exports.verifyPhoneOTP = async (req, res, next) => {
   try {
-    const normalizedEmail = normalizeEmail(req.body.email);
+    const normalizedEmail = normalizeEmail(req.body.email || "");
     const normalizedPhone = normalizePhoneNumber(req.body.phoneNumber || "");
-    const otp = String(req.body.otp || req.body.phoneOtp || req.body.emailOtp || "").trim();
+    const otp = String(req.body.otp || req.body.phoneOtp || "").trim();
+    const channel = String(req.body.channel || "sms").toLowerCase();
+    const otpChannel = channel === "phone" ? "sms" : channel;
 
     if (!otp || (!normalizedEmail && !normalizedPhone)) {
       return res.status(400).json({
@@ -326,91 +279,49 @@ exports.verifyPhoneOTP = async (req, res, next) => {
       return res.status(404).json({ success: false, message: "User not found." });
     }
 
-    if (user.phoneVerified && user.isActive) {
-      const tokens = issueTokens(user.id);
-      const responseUser = await buildUserResponse(user);
-      return res.json({ success: true, message: "Phone already verified.", ...tokens, user: responseUser });
+    if (user.phoneVerified) {
+      let refreshedUser = user;
+      if (shouldActivateUser(user) && !user.isActive) {
+        refreshedUser = await prisma.user.update({
+          where: { id: user.id },
+          data: { isActive: true },
+        });
+        const displayName = await resolveDisplayName(refreshedUser);
+        sendWelcomeEmail({ email: refreshedUser.email, role: refreshedUser.role, name: displayName }).catch(() => {});
+        if (refreshedUser.phoneNumber) {
+          sendWelcomeSMS({ phoneNumber: refreshedUser.phoneNumber, name: displayName || "" }).catch(() => {});
+        }
+      }
+      return res.json(await buildVerificationResponse({ user: refreshedUser, message: "Phone already verified." }));
     }
 
-    const targetPhone = normalizePhoneNumber(normalizedPhone || user.phoneNumber || "");
-    if (!targetPhone) {
-      return res.status(400).json({ success: false, message: "No phone number found for this account." });
-    }
+    await verifyOtp({ userId: user.id, channel: otpChannel, purpose: "verify_phone", code: otp });
 
-    const code = await prisma.phoneVerificationCode.findFirst({
-      where: {
-        userId: user.id,
-        phoneNumber: targetPhone,
-        consumedAt: null,
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        phoneVerified: true,
+        phoneNumber: normalizedPhone || user.phoneNumber,
+        isActive: shouldActivateUser({ ...user, phoneVerified: true }),
       },
-      orderBy: { createdAt: "desc" },
     });
 
-    if (!code || code.expiresAt < new Date()) {
-      return res.status(400).json({ success: false, message: "Invalid or expired OTP." });
-    }
-
-    if (code.attempts >= OTP_MAX_ATTEMPTS) {
-      return res.status(429).json({ success: false, message: "Too many failed OTP attempts. Request a new OTP." });
-    }
-
-    if (code.codeHash !== hashToken(otp)) {
-      await prisma.phoneVerificationCode.update({
-        where: { id: code.id },
-        data: { attempts: { increment: 1 } },
-      });
-      return res.status(400).json({ success: false, message: "Invalid or expired OTP." });
-    }
-
-    const updatedUser = await prisma.$transaction(async (tx) => {
-      await tx.phoneVerificationCode.update({
-        where: { id: code.id },
-        data: { consumedAt: new Date() },
-      });
-
-      // only activate if email already verified
-      const shouldActivate = !!user.emailVerified;
-      return tx.user.update({
-        where: { id: user.id },
-        data: {
-          phoneVerified: true,
-          phoneNumber: targetPhone,
-          isActive: shouldActivate ? true : user.isActive,
-        },
-      });
-    });
-
-    // only send welcome messages if account just became active
     if (updatedUser.isActive && !user.isActive) {
       const displayName = await resolveDisplayName(updatedUser);
-      sendWelcomeEmail({
-        email: updatedUser.email,
-        role: updatedUser.role,
-        name: displayName,
-        companyName: null,
-      }).catch(() => {});
-
-      sendWelcomeSMS({
-        phoneNumber: targetPhone,
-        name: displayName || "",
-      }).catch(() => {});
+      sendWelcomeEmail({ email: updatedUser.email, role: updatedUser.role, name: displayName }).catch(() => {});
+      if (updatedUser.phoneNumber) {
+        sendWelcomeSMS({ phoneNumber: updatedUser.phoneNumber, name: displayName || "" }).catch(() => {});
+      }
     }
 
-    const tokens = issueTokens(updatedUser.id);
-    const responseUser = await buildUserResponse(updatedUser);
-
-    return res.json({
-      success: true,
-      message: "Phone verified successfully.",
-      ...tokens,
-      user: responseUser,
-    });
+    return res.json(
+      await buildVerificationResponse({ user: updatedUser, message: "Phone verified successfully." })
+    );
   } catch (error) {
     next(error);
   }
 };
-
-// generic verify endpoint; choose channel based on explicit channel or which OTP field is present
+// ─── Generic Verify OTP (preserved) ───────────────────────────────────
 exports.verifyOTP = async (req, res, next) => {
   const explicit = String(req.body.channel || "").toLowerCase();
   if (explicit === "email") {
@@ -421,7 +332,6 @@ exports.verifyOTP = async (req, res, next) => {
   }
   // fallback by inspecting provided codes
   if (req.body.emailOtp && !req.body.phoneOtp) {
-    // handle email OTP; some clients pass emailOtp, phoneNumber
     req.body.otp = req.body.emailOtp;
     return exports.verifyEmailOTP(req, res, next);
   }
@@ -430,10 +340,12 @@ exports.verifyOTP = async (req, res, next) => {
   return exports.verifyPhoneOTP(req, res, next);
 };
 
+// ─── Email OTP Verification (preserved) ───────────────────────────────
 exports.verifyEmailOTP = async (req, res, next) => {
   try {
     const normalizedEmail = normalizeEmail(req.body.email || "");
     const otp = String(req.body.otp || "").trim();
+    const channel = String(req.body.channel || "email").toLowerCase();
 
     if (!normalizedEmail || !otp) {
       return res.status(400).json({ success: false, message: "Provide email and otp." });
@@ -444,44 +356,36 @@ exports.verifyEmailOTP = async (req, res, next) => {
       return res.status(404).json({ success: false, message: "User not found." });
     }
 
-    const code = await prisma.verificationCode.findFirst({
-      where: {
-        email: normalizedEmail,
-        channel: "email",
-        consumedAt: null,
+    if (user.emailVerified) {
+      let refreshedUser = user;
+      if (shouldActivateUser(user) && !user.isActive) {
+        refreshedUser = await prisma.user.update({
+          where: { id: user.id },
+          data: { isActive: true },
+        });
+        const displayName = await resolveDisplayName(refreshedUser);
+        sendWelcomeEmail({ email: refreshedUser.email, role: refreshedUser.role, name: displayName }).catch(() => {});
+        if (refreshedUser.phoneNumber) {
+          sendWelcomeSMS({ phoneNumber: refreshedUser.phoneNumber, name: displayName || "" }).catch(() => {});
+        }
+      }
+      return res.json(await buildVerificationResponse({ user: refreshedUser, message: "Email already verified." }));
+    }
+
+    await verifyOtp({ userId: user.id, channel, purpose: "verify_email", code: otp });
+
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerified: true,
+        isActive: shouldActivateUser({ ...user, emailVerified: true }),
       },
-      orderBy: { createdAt: "desc" },
-    });
-
-    if (!code || code.expiresAt < new Date()) {
-      return res.status(400).json({ success: false, message: "Invalid or expired OTP." });
-    }
-
-    if (code.code !== otp) {
-      // consider tracking attempts if desired
-      return res.status(400).json({ success: false, message: "Invalid or expired OTP." });
-    }
-
-    const updatedUser = await prisma.$transaction(async (tx) => {
-      await tx.verificationCode.update({
-        where: { id: code.id },
-        data: { consumedAt: new Date() },
-      });
-
-      const data = { emailVerified: true };
-      if (user.phoneVerified) data.isActive = true;
-
-      return tx.user.update({
-        where: { id: user.id },
-        data,
-      });
     });
 
     if (!user.emailVerified) {
       await applyPendingProfile(user.id);
     }
 
-    // send welcome mails once account becomes active
     if (updatedUser.isActive && !user.isActive) {
       const displayName = await resolveDisplayName(updatedUser);
       sendWelcomeEmail({ email: updatedUser.email, role: updatedUser.role, name: displayName }).catch(() => {});
@@ -490,20 +394,14 @@ exports.verifyEmailOTP = async (req, res, next) => {
       }
     }
 
-    const tokens = issueTokens(updatedUser.id);
-    const responseUser = await buildUserResponse(updatedUser);
-
-    return res.json({
-      success: true,
-      message: "Email verified successfully.",
-      ...tokens,
-      user: responseUser,
-    });
+    return res.json(
+      await buildVerificationResponse({ user: updatedUser, message: "Email verified successfully." })
+    );
   } catch (error) {
     next(error);
   }
 };
-
+// ─── Complete Registration (deprecated, kept) ─────────────────────────
 exports.completeRegistration = async (_req, res) => {
   return res.status(400).json({
     success: false,
@@ -511,57 +409,68 @@ exports.completeRegistration = async (_req, res) => {
   });
 };
 
+// ─── Resend OTP (enhanced with phone) ─────────────────────────────────
 exports.resendOTP = async (req, res, next) => {
   try {
-    const normalizedEmail = normalizeEmail(req.body.email);
+    const normalizedEmail = normalizeEmail(req.body.email || "");
     const normalizedPhone = normalizePhoneNumber(req.body.phoneNumber || "");
-    const channel = String(req.body.channel || "phone").toLowerCase();
+    const rawChannel = String(req.body.channel || "email").toLowerCase();
+    const channel = rawChannel === "phone" ? "sms" : rawChannel;
+    const purpose = String(req.body.purpose || "").trim() || (channel === "sms" ? "verify_phone" : "verify_email");
 
     if (!normalizedEmail && !normalizedPhone) {
       return res.status(400).json({ success: false, message: "Provide email or phoneNumber." });
     }
 
-    const user = normalizedEmail
-      ? await prisma.user.findUnique({ where: { email: normalizedEmail } })
-      : await prisma.user.findUnique({ where: { phoneNumber: normalizedPhone } });
+    let user = null;
+    if (normalizedEmail) {
+      user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    }
+    if (!user && normalizedPhone) {
+      user = await prisma.user.findUnique({ where: { phoneNumber: normalizedPhone } });
+    }
 
     if (!user) {
       return res.status(404).json({ success: false, message: "User not found." });
     }
 
-    if (channel === "phone") {
+    if (channel === "sms") {
       if (user.phoneVerified && user.isActive) {
         return res.status(400).json({ success: false, message: "Phone is already verified for this account." });
       }
       if (!user.phoneNumber) {
         return res.status(400).json({ success: false, message: "No phone number is linked to this account." });
       }
-      const gate = await canSendOtp({ channel: "phone", user, phoneNumber: user.phoneNumber });
-      if (!gate.allowed) {
-        return res.status(429).json({ success: false, message: gate.message });
+
+      if (!user.smsBlocked) {
+        const otp = await createOtp({ userId: user.id, channel: "sms", purpose });
+        const smsResult = await sendOtpSms({ phoneNumber: user.phoneNumber, otp });
+        if (smsResult.success) {
+          return res.json({ success: true, message: "OTP resent to your phone number.", channelUsed: "sms" });
+        }
+        if (smsResult.blacklisted) {
+          user = await prisma.user.update({ where: { id: user.id }, data: { smsBlocked: true } });
+        }
       }
 
-      const otp = await createPhoneVerificationCode({ userId: user.id, phoneNumber: user.phoneNumber });
-      await sendOTPViaSMS({ phoneNumber: user.phoneNumber, otp });
-      return res.json({ success: true, message: "OTP resent to your phone number." });
+      if (!user.email) {
+        return res.status(400).json({ success: false, message: "SMS failed and no email is available for fallback." });
+      }
+      const fallbackOtp = await createOtp({ userId: user.id, channel: "email", purpose });
+      await sendOtpEmail({ email: user.email, name: "", role: user.role || "", otp: fallbackOtp });
+      return res.json({ success: true, message: "OTP resent via email fallback.", channelUsed: "email" });
     }
 
     if (channel === "email") {
-      if (user.emailVerified && user.isActive) {
+      if (user.emailVerified && user.isActive && purpose === "verify_email") {
         return res.status(400).json({ success: false, message: "Email is already verified for this account." });
       }
       if (!user.email) {
         return res.status(400).json({ success: false, message: "No email is linked to this account." });
       }
-      const gate = await canSendOtp({ channel: "email", user, phoneNumber: user.phoneNumber });
-      if (!gate.allowed) {
-        return res.status(429).json({ success: false, message: gate.message });
-      }
-
-      const displayName = await resolveDisplayName(user);
-      const otp = await createEmailVerificationCode({ userId: user.id, email: user.email });
-      await sendVerificationEmail({ email: user.email, name: displayName || "", role: user.role || "" }, otp);
-      return res.json({ success: true, message: "OTP resent to your email address." });
+      const otp = await createOtp({ userId: user.id, channel: "email", purpose });
+      await sendOtpEmail({ email: user.email, name: "", role: user.role || "", otp });
+      return res.json({ success: true, message: "OTP resent to your email address.", channelUsed: "email" });
     }
 
     return res.status(400).json({ success: false, message: "Unknown channel." });
@@ -569,21 +478,79 @@ exports.resendOTP = async (req, res, next) => {
     next(error);
   }
 };
+// ─── Login with Phone OTP (deprecated, kept) ─────────────────────────
+exports.sendLoginOTP = async (req, res, next) => {
+  try {
+    const normalizedPhone = normalizePhoneNumber(req.body.phoneNumber || "");
+    if (!normalizedPhone || !isValidPhoneNumber(normalizedPhone)) {
+      return res.status(400).json({ success: false, message: "Provide a valid phone number in international format." });
+    }
 
-exports.sendLoginOTP = async (_req, res) => {
-  return res.status(400).json({
-    success: false,
-    message: "Phone OTP login is disabled. Use phoneNumber + password or Google OAuth.",
-  });
+    const user = await prisma.user.findUnique({ where: { phoneNumber: normalizedPhone } });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found." });
+    }
+    if (!user.isActive) {
+      return res.status(403).json({ success: false, message: "Account is inactive. Verify your email and phone first." });
+    }
+
+    if (!user.smsBlocked) {
+      const otp = await createOtp({ userId: user.id, channel: "sms", purpose: "login_phone" });
+      const smsResult = await sendOtpSms({ phoneNumber: user.phoneNumber, otp });
+      if (smsResult.success) {
+        return res.json({ success: true, message: "OTP sent to your phone.", channelUsed: "sms" });
+      }
+      if (smsResult.blacklisted) {
+        await prisma.user.update({ where: { id: user.id }, data: { smsBlocked: true } });
+      }
+    }
+
+    if (!user.email) {
+      return res.status(400).json({ success: false, message: "SMS failed and no email is available for fallback." });
+    }
+    const fallbackOtp = await createOtp({ userId: user.id, channel: "email", purpose: "login_phone" });
+    await sendOtpEmail({ email: user.email, name: "", role: user.role || "", otp: fallbackOtp });
+    return res.json({ success: true, message: "OTP sent via email fallback.", channelUsed: "email" });
+  } catch (error) {
+    next(error);
+  }
 };
 
-exports.loginWithPhoneOTP = async (_req, res) => {
-  return res.status(400).json({
-    success: false,
-    message: "Phone OTP login is disabled. Use phoneNumber + password or Google OAuth.",
-  });
-};
+exports.loginWithPhoneOTP = async (req, res, next) => {
+  try {
+    const normalizedPhone = normalizePhoneNumber(req.body.phoneNumber || "");
+    const otp = String(req.body.otp || "").trim();
+    const channel = String(req.body.channel || "sms").toLowerCase();
+    const otpChannel = channel === "phone" ? "sms" : channel;
 
+    if (!normalizedPhone || !otp) {
+      return res.status(400).json({ success: false, message: "Phone number and OTP are required." });
+    }
+
+    const user = await prisma.user.findUnique({ where: { phoneNumber: normalizedPhone } });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found." });
+    }
+    if (!user.isActive) {
+      return res.status(403).json({ success: false, message: "Account is inactive. Verify your email and phone first." });
+    }
+
+    await verifyOtp({ userId: user.id, channel: otpChannel, purpose: "login_phone", code: otp });
+
+    const tokens = issueTokens(user.id);
+    const responseUser = await buildUserResponse(user);
+
+    return res.json({
+      success: true,
+      message: "Login successful.",
+      ...tokens,
+      user: responseUser,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+// ─── Standard Login ───────────────────────────────────────────────────
 exports.login = async (req, res, next) => {
   try {
     const { password } = req.body;
@@ -605,13 +572,15 @@ exports.login = async (req, res, next) => {
       return res.status(401).json({ success: false, message: "Invalid credentials." });
     }
 
-    // require both phone and email verification before allowing login
-    if (!user.isActive || !user.phoneVerified || !user.emailVerified) {
+    if (!user.isActive || !shouldActivateUser(user)) {
       return res.status(403).json({
         success: false,
         message: "Account is inactive. Verify your phone and email first.",
         pendingEmail: user.email,
         pendingPhoneNumber: user.phoneNumber,
+        emailVerified: user.emailVerified,
+        phoneVerified: user.phoneVerified,
+        verificationNeeded: true,
       });
     }
 
@@ -623,7 +592,6 @@ exports.login = async (req, res, next) => {
     const tokens = issueTokens(user.id);
     const responseUser = await buildUserResponse(user);
 
-    // record event for auditing
     await prisma.authEvent.create({
       data: {
         userId: String(user.id),
@@ -662,9 +630,10 @@ exports.login = async (req, res, next) => {
   }
 };
 
+// ─── Google OAuth (preserved) ─────────────────────────────────────────
 exports.googleAuthStart = async (_req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+  const redirectUri = resolveGoogleRedirectUri();
 
   if (!clientId || !redirectUri) {
     return res.status(500).json({
@@ -673,12 +642,16 @@ exports.googleAuthStart = async (_req, res) => {
     });
   }
 
+  const state = signOAuthState({ ts: Date.now(), nonce: crypto.randomBytes(12).toString("hex") });
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: "code",
     scope: "openid email profile",
     prompt: "select_account",
+    access_type: "offline",
+    include_granted_scopes: "true",
+    state,
   });
 
   return res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
@@ -711,10 +684,14 @@ exports.googleAuthCallback = async (req, res, next) => {
     if (!code) {
       return redirectOAuthResult(res, { error: "missing_code" });
     }
+    const state = String(req.query.state || "").trim();
+    if (!verifyOAuthState(state)) {
+      return redirectOAuthResult(res, { error: "invalid_state" });
+    }
 
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+    const redirectUri = resolveGoogleRedirectUri();
 
     if (!clientId || !clientSecret || !redirectUri) {
       return redirectOAuthResult(res, { error: "google_oauth_not_configured" });
@@ -728,32 +705,37 @@ exports.googleAuthCallback = async (req, res, next) => {
       grant_type: "authorization_code",
     });
 
-    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: tokenParams.toString(),
-    });
-
-    if (!tokenResponse.ok) {
+    let tokenPayload = null;
+    try {
+      const tokenResponse = await axios.post(
+        "https://oauth2.googleapis.com/token",
+        tokenParams.toString(),
+        {
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          timeout: 10000,
+        }
+      );
+      tokenPayload = tokenResponse?.data || null;
+    } catch (error) {
       return redirectOAuthResult(res, { error: "google_token_exchange_failed" });
     }
 
-    const tokenPayload = await tokenResponse.json();
-    const googleAccessToken = tokenPayload.access_token;
+    const googleAccessToken = tokenPayload?.access_token;
 
     if (!googleAccessToken) {
       return redirectOAuthResult(res, { error: "missing_google_access_token" });
     }
 
-    const profileResponse = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
-      headers: { Authorization: `Bearer ${googleAccessToken}` },
-    });
-
-    if (!profileResponse.ok) {
+    let profile = null;
+    try {
+      const profileResponse = await axios.get("https://openidconnect.googleapis.com/v1/userinfo", {
+        headers: { Authorization: `Bearer ${googleAccessToken}` },
+        timeout: 10000,
+      });
+      profile = profileResponse?.data || null;
+    } catch (error) {
       return redirectOAuthResult(res, { error: "google_profile_fetch_failed" });
     }
-
-    const profile = await profileResponse.json();
     const email = normalizeEmail(profile.email);
     const providerUserId = String(profile.sub || "").trim();
     const fullName = String(profile.name || "").trim();
@@ -799,19 +781,22 @@ exports.googleAuthCallback = async (req, res, next) => {
           where: { id: byEmail.id },
           data: {
             isActive: true,
+            emailVerified: true,
           },
         });
       }
 
-        const created = await tx.user.create({
-          data: {
-            email,
-            password: null,
-            role: "freelancer",
-            isActive: true,
-            phoneVerified: false,
-          },
-        });
+      const created = await tx.user.create({
+        data: {
+          email,
+          password: null,
+          role: "freelancer",
+          isActive: true,
+          phoneVerified: false,
+          emailVerified: true,
+          smsBlocked: false,
+        },
+      });
 
       await tx.authProvider.create({
         data: {
@@ -838,6 +823,7 @@ exports.googleAuthCallback = async (req, res, next) => {
   }
 };
 
+// ─── Token Refresh ────────────────────────────────────────────────────
 exports.refreshToken = async (req, res, next) => {
   try {
     const { refreshToken } = req.body;
@@ -864,80 +850,102 @@ exports.refreshToken = async (req, res, next) => {
   }
 };
 
+// ─── Logout ───────────────────────────────────────────────────────────
 exports.logout = async (_req, res) => {
   return res.json({ success: true, message: "Logged out successfully." });
 };
 
+// ─── Forgot Password ─────────────────────────────────────────────────
 exports.forgotPassword = async (req, res, next) => {
   try {
-    const email = normalizeEmail(req.body.email);
+    const email = normalizeEmail(req.body.email || "");
     const user = email ? await prisma.user.findUnique({ where: { email } }) : null;
 
     if (!user) {
-      return res.json({ success: true, message: "If that email exists, a reset link has been sent." });
+      return res.json({ success: true, message: "If that email exists, a reset code has been sent." });
     }
 
-    const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = hashToken(rawToken);
+    const otp = await createOtp({ userId: user.id, channel: "email", purpose: "reset_password" });
+    await sendPasswordResetOtpEmail({ email: user.email, name: await resolveDisplayName(user), role: user.role || "", otp });
 
-    await prisma.passwordResetToken.create({
-      data: {
-        userId: user.id,
-        tokenHash,
-        expiresAt: new Date(Date.now() + RESET_TTL_MS),
-      },
-    });
-
-    const displayName = await resolveDisplayName(user);
-    await sendPasswordResetEmail({ email: user.email, name: displayName, role: user.role }, rawToken);
-
-    return res.json({ success: true, message: "If that email exists, a reset link has been sent." });
+    return res.json({ success: true, message: "If that email exists, a reset code has been sent." });
   } catch (error) {
     next(error);
   }
 };
 
+// ─── Reset Password ───────────────────────────────────────────────────
 exports.resetPassword = async (req, res, next) => {
   try {
-    const { token, password } = req.body;
+    const { email, otp, token, password } = req.body;
 
-    if (!token || !password) {
-      return res.status(400).json({ success: false, message: "Token and new password are required." });
+    if (!password) {
+      return res.status(400).json({ success: false, message: "New password is required." });
     }
-
     if (String(password).length < 8) {
       return res.status(400).json({ success: false, message: "Password must be at least 8 characters." });
     }
 
-    const tokenHash = hashToken(token);
-    const record = await prisma.passwordResetToken.findUnique({ where: { tokenHash } });
+    if (token) {
+      const tokenHash = hashResetToken(token);
+      const record = await prisma.passwordResetToken.findUnique({ where: { tokenHash } });
+      if (!record || record.usedAt || record.expiresAt < new Date()) {
+        return res.status(400).json({ success: false, message: "Invalid or expired reset token." });
+      }
 
-    if (!record || record.usedAt || record.expiresAt < new Date()) {
-      return res.status(400).json({ success: false, message: "Invalid or expired reset token." });
+      const hashedPassword = await bcrypt.hash(password, 12);
+      await prisma.$transaction([
+        prisma.user.update({
+          where: { id: record.userId },
+          data: { password: hashedPassword },
+        }),
+        prisma.passwordResetToken.update({
+          where: { id: record.id },
+          data: { usedAt: new Date() },
+        }),
+      ]);
+
+      const user = await prisma.user.findUnique({ where: { id: record.userId } });
+      if (user?.email) {
+        const displayName = await resolveDisplayName(user);
+        sendPasswordChangedEmail(
+          { email: user.email, name: displayName || "", companyName: user.companyName || "" },
+          { time: new Date().toISOString(), ip: req.ip, userAgent: req.headers["user-agent"] }
+        ).catch(() => {});
+      }
+      return res.json({ success: true, message: "Password reset successfully." });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const normalizedEmail = normalizeEmail(email || "");
+    if (!normalizedEmail || !otp) {
+      return res.status(400).json({ success: false, message: "Email and otp are required." });
+    }
 
-    await prisma.$transaction([
-      prisma.user.update({
-        where: { id: record.userId },
-        data: {
-          password: hashedPassword,
-          isActive: true,
-        },
-      }),
-      prisma.passwordResetToken.update({
-        where: { id: record.id },
-        data: { usedAt: new Date() },
-      }),
-    ]);
+    const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (!user) {
+      return res.status(400).json({ success: false, message: "Invalid or expired reset code." });
+    }
+
+    await verifyOtp({ userId: user.id, channel: "email", purpose: "reset_password", code: String(otp).trim() });
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { password: hashedPassword },
+    });
+
+    const displayName = await resolveDisplayName(user);
+    sendPasswordChangedEmail(
+      { email: user.email, name: displayName || "", companyName: user.companyName || "" },
+      { time: new Date().toISOString(), ip: req.ip, userAgent: req.headers["user-agent"] }
+    ).catch(() => {});
 
     return res.json({ success: true, message: "Password reset successfully." });
   } catch (error) {
     next(error);
   }
 };
-
+// ─── Get Current User ─────────────────────────────────────────────────
 exports.getMe = async (req, res) => {
   const profile = await getMyProfile(req.user.id);
   return res.json({ success: true, user: profile || buildSafeUser(req.user) });

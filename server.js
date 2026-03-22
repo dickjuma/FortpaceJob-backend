@@ -5,10 +5,11 @@ const app = require("./src/app");
 const { initSocket } = require("./src/chat/socket"); // This file will need refactoring from Mongoose to Prisma
 const { connectDB, prisma } = require("./src/config/db");
 const { verifyCloudinaryConnection } = require("./src/config/cloudinary");
-const { verifyAfricasTalkingConnection } = require("./src/utils/sms");
+const { verifyFluxSMSConnection } = require("./src/utils/sms");
 const { verifyResendConnection } = require("./src/utils/email");
 const logger = require("./src/utils/logger");
 const { scheduleInactiveUserCleanup } = require("./src/controllers/userCleanup");
+const { initCronJob } = require("./src/services/cronService");
 
 const INITIAL_PORT = Number(process.env.PORT) || 5000;
 
@@ -53,13 +54,15 @@ const listenWithFallback = (port) =>
 const startServer = async () => {
   try {
     await connectDB();
+
     await verifyCloudinaryConnection();
     await verifyResendConnection();
-    await verifyAfricasTalkingConnection();
+    await verifyFluxSMSConnection();
     await listenWithFallback(INITIAL_PORT);
 
     // Initialize scheduled jobs after server starts
     scheduleInactiveUserCleanup();
+    initCronJob();
   } catch (err) {
     logger.error(`Server startup failed: ${err.message}`);
     process.exit(1);

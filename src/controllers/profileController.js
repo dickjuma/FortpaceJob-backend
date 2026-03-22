@@ -1,5 +1,38 @@
-const { uploadAvatar, uploadPortfolioFile, uploadVideo } = require("../config/cloudinary");
-const { getMyProfile, updateMyProfile: updateMyProfileUtil } = require("../utils/profileStore");
+const {
+  uploadAvatar,
+  uploadCoverPhoto,
+  uploadPortfolioFile,
+  uploadVideo,
+} = require("../config/cloudinary");
+const {
+  getMyProfile,
+  updateMyProfile: updateMyProfileUtil,
+  sanitizeProfileInput,
+} = require("../utils/profileStore");
+const { prisma } = require("../config/db");
+const { checkProfileCompletion } = require("../utils/profileCompletion");
+
+const persistProfileUpdate = async (req, res, input) => {
+  const updatedProfile = await updateMyProfileUtil(req.user.id, sanitizeProfileInput(input));
+  const { isComplete, missingFields } = checkProfileCompletion(updatedProfile);
+
+  await prisma.user.update({
+    where: { id: Number(req.user.id) },
+    data: {
+      lastProfileUpdate: new Date(),
+      reminderSent: false,
+      profileCompleted: isComplete,
+    },
+  });
+
+  return res.json({
+    success: true,
+    message: "Profile updated.",
+    user: updatedProfile,
+    completeness: isComplete ? "Complete" : "Incomplete",
+    missingFields,
+  });
+};
 
 exports.getMyProfile = async (req, res, next) => {
   try {
@@ -15,31 +48,25 @@ exports.getMyProfile = async (req, res, next) => {
 
 exports.updateMyProfile = async (req, res, next) => {
   try {
-    const allowed = [
-      "name",
-      "companyName",
-      "bio",
-      "skills",
-      "hourlyRate",
-      "currency",
-      "serviceMode",
-      "physicalCategory",
-      "serviceArea",
-      "companyDescription",
-      "industry",
-      "budget",
-      "hiringCapacity",
-      "country",
-      "languages",
-    ];
+    return persistProfileUpdate(req, res, req.body);
+  } catch (error) {
+    next(error);
+  }
+};
 
-    const input = {};
-    allowed.forEach((key) => {
-      if (req.body[key] !== undefined) input[key] = req.body[key];
-    });
+exports.updateProfile = async (req, res, next) => {
+  try {
+    return persistProfileUpdate(req, res, req.body);
+  } catch (error) {
+    next(error);
+  }
+};
 
-    const updated = await updateMyProfileUtil(req.user.id, input);
-    return res.json({ success: true, message: "Profile updated.", user: updated });
+exports.getMissingFields = async (req, res, next) => {
+  try {
+    const profile = await getMyProfile(req.user.id);
+    const { missingFields } = checkProfileCompletion(profile);
+    return res.json({ success: true, missing: missingFields });
   } catch (error) {
     next(error);
   }
@@ -57,6 +84,23 @@ exports.uploadAvatar = async (req, res, next) => {
       avatarFileName: req.file.originalname || uploaded.original_filename || "",
     });
     return res.json({ success: true, message: "Avatar uploaded.", user: updated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.uploadCoverPhoto = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "Cover photo file is required." });
+    }
+    const uploaded = await uploadCoverPhoto(req.file.buffer);
+    const updated = await updateMyProfileUtil(req.user.id, {
+      coverPhoto: uploaded.secure_url,
+      coverPhotoPublicId: uploaded.public_id,
+      coverPhotoFileName: req.file.originalname || uploaded.original_filename || "",
+    });
+    return res.json({ success: true, message: "Cover photo updated.", user: updated });
   } catch (error) {
     next(error);
   }

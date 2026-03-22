@@ -2,40 +2,55 @@ const cloudinary = require("cloudinary").v2;
 const { Readable } = require("stream");
 const logger = require("../utils/logger");
 
-const pickFirstValid = (...values) => values.find((v) => v && !v.toLowerCase().includes("your_")) || "";
-
-const resolvedCloudName = pickFirstValid(
-  process.env.CLOUDINARY_CLOUD_NAME,
-  process.env.CLAUDINARY_CLOUD_NAME
-);
-const resolvedApiKey = pickFirstValid(process.env.CLOUDINARY_API_KEY, process.env.CLAUDINARY_API_KEY);
-const resolvedApiSecret = pickFirstValid(
-  process.env.CLOUDINARY_API_SECRET,
-  process.env.CLAUDINARY_API_SECRET
-);
-
-cloudinary.config({
-  cloud_name: resolvedCloudName,
-  api_key: resolvedApiKey,
-  api_secret: resolvedApiSecret,
-});
-
-const cloudinaryConfigured = () => {
-  const cloudName = resolvedCloudName;
-  const apiKey = resolvedApiKey;
-  const apiSecret = resolvedApiSecret;
-
-  const invalid = (value) =>
-    !value ||
-    /^\*+$/.test(value.trim()) ||
-    value.trim().toLowerCase() === "undefined" ||
-    value.toLowerCase().includes("your_cloud_name") ||
-    value.toLowerCase().includes("your_api_key") ||
-    value.toLowerCase().includes("your_api_secret");
-
-  return !invalid(cloudName) && !invalid(apiKey) && !invalid(apiSecret);
+// ─── Configuration ─────────────────────────────────────────────────────────────
+// Normalise environment variable names (support common typos)
+const CLOUDINARY_CONFIG = {
+  cloudName: process.env.CLOUDINARY_CLOUD_NAME || process.env.CLAUDINARY_CLOUD_NAME,
+  apiKey: process.env.CLOUDINARY_API_KEY || process.env.CLAUDINARY_API_KEY,
+  apiSecret: process.env.CLOUDINARY_API_SECRET || process.env.CLAUDINARY_API_SECRET,
 };
 
+/**
+ * Check if a configuration value is valid (not empty, not placeholder)
+ */
+const isValidConfigValue = (value) => {
+  if (!value || typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (trimmed === "") return false;
+  const lower = trimmed.toLowerCase();
+  // Ignore common placeholder strings
+  const placeholders = ["your_cloud_name", "your_api_key", "your_api_secret", "undefined", "null"];
+  return !placeholders.some((p) => lower.includes(p));
+};
+
+/**
+ * Verify that all required Cloudinary credentials are present and valid
+ */
+const isCloudinaryConfigured = () => {
+  return (
+    isValidConfigValue(CLOUDINARY_CONFIG.cloudName) &&
+    isValidConfigValue(CLOUDINARY_CONFIG.apiKey) &&
+    isValidConfigValue(CLOUDINARY_CONFIG.apiSecret)
+  );
+};
+
+// Configure Cloudinary if credentials are available
+if (isCloudinaryConfigured()) {
+  cloudinary.config({
+    cloud_name: CLOUDINARY_CONFIG.cloudName,
+    api_key: CLOUDINARY_CONFIG.apiKey,
+    api_secret: CLOUDINARY_CONFIG.apiSecret,
+  });
+} else {
+  logger.warn(
+    "Cloudinary credentials missing or invalid. Uploads will fail until configured correctly."
+  );
+}
+
+// ─── Error formatting ──────────────────────────────────────────────────────────
+/**
+ * Extract a human-readable error message from various error shapes
+ */
 const formatCloudinaryError = (error) => {
   if (!error) return "Unknown Cloudinary error";
   if (typeof error === "string") return error;
@@ -44,23 +59,28 @@ const formatCloudinaryError = (error) => {
   if (Array.isArray(error.errors) && error.errors[0]?.message) return error.errors[0].message;
   try {
     return JSON.stringify(error);
-  } catch (_) {
+  } catch {
     return String(error);
   }
 };
 
+// ─── Connection verification ───────────────────────────────────────────────────
+/**
+ * Verify connectivity to Cloudinary by calling ping endpoint
+ * @returns {Promise<boolean>} true if connection succeeds
+ */
 const verifyCloudinaryConnection = async () => {
-  if (!cloudinaryConfigured()) {
+  if (!isCloudinaryConfigured()) {
     logger.error(
-      "Cloudinary not configured. Provide CLOUDINARY_CLOUD_NAME/CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET (or CLAUDINARY_* fallback)."
+      "Cannot verify Cloudinary connection: credentials are missing or invalid. " +
+      "Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET."
     );
     return false;
   }
 
   try {
-    // Lightweight auth verification
     await cloudinary.api.ping();
-    logger.info(`Cloudinary connected [cloud=${resolvedCloudName}]`);
+    logger.info(`Cloudinary connected (cloud: ${CLOUDINARY_CONFIG.cloudName})`);
     return true;
   } catch (error) {
     logger.error(`Cloudinary connection failed: ${formatCloudinaryError(error)}`);
@@ -68,34 +88,44 @@ const verifyCloudinaryConnection = async () => {
   }
 };
 
+// ─── Core upload function ──────────────────────────────────────────────────────
 /**
  * Upload a buffer to Cloudinary
- * @param {Buffer} buffer - file buffer
- * @param {Object} options - cloudinary upload options
- * @returns {Promise<Object>} cloudinary upload result
+ * @param {Buffer} buffer - file content as buffer
+ * @param {Object} options - Cloudinary upload options (folder, transformation, etc.)
+ * @returns {Promise<Object>} Cloudinary upload result
+ * @throws {Error} if credentials missing or upload fails
  */
 const uploadToCloudinary = (buffer, options = {}) => {
+  if (!isCloudinaryConfigured()) {
+    return Promise.reject(
+      new Error(
+        "Cloudinary credentials are not configured. " +
+        "Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET."
+      )
+    );
+  }
+
   return new Promise((resolve, reject) => {
-    if (!cloudinaryConfigured()) {
-      return reject(
-        new Error(
-          "Cloudinary credentials are not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET."
-        )
-      );
-    }
     const uploadStream = cloudinary.uploader.upload_stream(options, (error, result) => {
-      if (error) return reject(error);
-      resolve(result);
+      if (error) {
+        reject(error);
+      } else {
+        resolve(result);
+      }
     });
-    const readable = new Readable();
-    readable.push(buffer);
-    readable.push(null);
-    readable.pipe(uploadStream);
+
+    // Convert buffer to readable stream and pipe to upload stream
+    const readableStream = new Readable();
+    readableStream.push(buffer);
+    readableStream.push(null);
+    readableStream.pipe(uploadStream);
   });
 };
 
+// ─── Specialised upload functions ──────────────────────────────────────────────
 /**
- * Upload avatar / logo
+ * Upload a user avatar (automatically resized to 400x400)
  */
 const uploadAvatar = (buffer) =>
   uploadToCloudinary(buffer, {
@@ -105,7 +135,19 @@ const uploadAvatar = (buffer) =>
   });
 
 /**
- * Upload portfolio image or PDF
+ * Upload a wide profile cover photo.
+ */
+const uploadCoverPhoto = (buffer) =>
+  uploadToCloudinary(buffer, {
+    folder: "forte/covers",
+    transformation: [{ width: 1600, height: 500, crop: "fill" }],
+    resource_type: "image",
+  });
+
+/**
+ * Upload a portfolio file (image or PDF)
+ * @param {Buffer} buffer
+ * @param {string} mimetype - e.g., 'image/png' or 'application/pdf'
  */
 const uploadPortfolioFile = (buffer, mimetype) =>
   uploadToCloudinary(buffer, {
@@ -114,7 +156,7 @@ const uploadPortfolioFile = (buffer, mimetype) =>
   });
 
 /**
- * Upload intro video
+ * Upload an intro video
  */
 const uploadVideo = (buffer) =>
   uploadToCloudinary(buffer, {
@@ -123,18 +165,23 @@ const uploadVideo = (buffer) =>
   });
 
 /**
- * Delete a file from Cloudinary by public_id
+ * Delete a file from Cloudinary by its public ID
+ * @param {string} publicId - Cloudinary public ID
+ * @param {string} resourceType - 'image', 'video', or 'raw'
+ * @returns {Promise<Object>} deletion result
  */
 const deleteFromCloudinary = (publicId, resourceType = "image") =>
   cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
 
+// ─── Module exports ────────────────────────────────────────────────────────────
 module.exports = {
-  cloudinary,
+  cloudinary,               // raw instance (use sparingly)
   uploadToCloudinary,
   uploadAvatar,
+  uploadCoverPhoto,
   uploadPortfolioFile,
   uploadVideo,
   deleteFromCloudinary,
-  cloudinaryConfigured,
+  isCloudinaryConfigured,   // renamed from cloudinaryConfigured
   verifyCloudinaryConnection,
 };

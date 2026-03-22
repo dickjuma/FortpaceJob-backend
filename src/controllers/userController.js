@@ -1,5 +1,6 @@
 const User = require("../models/User");
 const Review = require("../models/Review");
+const { sendPasswordChangedEmail } = require("../utils/email");
 const { sanitizeUser, getPagination, paginate, buildSearchFilter } = require("../utils/helpers");
 
 // ─── Get public profile ───────────────────────────────────────────────────────
@@ -113,6 +114,13 @@ exports.changePassword = async (req, res, next) => {
 
     user.password = newPassword;
     await user.save();
+
+    if (user.email) {
+      sendPasswordChangedEmail(
+        { email: user.email, name: user.name || "", companyName: user.companyName || "" },
+        { time: new Date().toISOString(), ip: req.ip, userAgent: req.headers["user-agent"] }
+      ).catch(() => {});
+    }
 
     res.json({ success: true, message: "Password changed successfully." });
   } catch (error) {
