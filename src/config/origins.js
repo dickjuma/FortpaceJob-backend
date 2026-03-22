@@ -1,6 +1,6 @@
 const DEFAULT_ORIGINS = [
   "http://localhost:3000",
-  "https://fortpace-job.vercel.app/api",
+  "https://fortpace-job.vercel.app",
   "https://fortpacejob-1.onrender.com",
 ];
 
