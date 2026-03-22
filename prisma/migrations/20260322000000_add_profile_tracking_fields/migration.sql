@@ -1,0 +1,4 @@
+ALTER TABLE "users"
+  ADD COLUMN IF NOT EXISTS "last_profile_update" TIMESTAMP(3),
+  ADD COLUMN IF NOT EXISTS "reminder_sent" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS "profile_completed" BOOLEAN NOT NULL DEFAULT false;

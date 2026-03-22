@@ -45,12 +45,18 @@ router.post("/test-fluxsms", async (req, res) => {
     const { sendSMS } = require("../utils/sms");
     const result = await sendSMS({ to: phone, message });
     if (result.status === "success") {
-      return res.json({ success: true, messageId: result.messageId, mobile: result.mobile });
+      return res.json({
+        success: true,
+        messageId: result.messageId,
+        mobile: result.mobile,
+      });
     } else {
       return res.status(500).json({ error: result.error || "Unknown error" });
     }
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({
+      error: err.message,
+    });
   }
 });
 
