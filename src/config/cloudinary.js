@@ -2,30 +2,25 @@ const cloudinary = require("cloudinary").v2;
 const { Readable } = require("stream");
 const logger = require("../utils/logger");
 
-// ─── Configuration ─────────────────────────────────────────────────────────────
-// Normalise environment variable names (support common typos)
+
 const CLOUDINARY_CONFIG = {
   cloudName: process.env.CLOUDINARY_CLOUD_NAME || process.env.CLAUDINARY_CLOUD_NAME,
   apiKey: process.env.CLOUDINARY_API_KEY || process.env.CLAUDINARY_API_KEY,
   apiSecret: process.env.CLOUDINARY_API_SECRET || process.env.CLAUDINARY_API_SECRET,
 };
 
-/**
- * Check if a configuration value is valid (not empty, not placeholder)
- */
+
 const isValidConfigValue = (value) => {
   if (!value || typeof value !== "string") return false;
   const trimmed = value.trim();
   if (trimmed === "") return false;
   const lower = trimmed.toLowerCase();
-  // Ignore common placeholder strings
+ 
   const placeholders = ["your_cloud_name", "your_api_key", "your_api_secret", "undefined", "null"];
   return !placeholders.some((p) => lower.includes(p));
 };
 
-/**
- * Verify that all required Cloudinary credentials are present and valid
- */
+
 const isCloudinaryConfigured = () => {
   return (
     isValidConfigValue(CLOUDINARY_CONFIG.cloudName) &&
@@ -34,7 +29,7 @@ const isCloudinaryConfigured = () => {
   );
 };
 
-// Configure Cloudinary if credentials are available
+
 if (isCloudinaryConfigured()) {
   cloudinary.config({
     cloud_name: CLOUDINARY_CONFIG.cloudName,

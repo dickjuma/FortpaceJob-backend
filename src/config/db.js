@@ -3,13 +3,13 @@ require("dotenv").config({ path: path.resolve(__dirname, "../../.env") });
 const { PrismaClient } = require("@prisma/client");
 const logger = require("../utils/logger");
 
-// Handle Supabase connection string for PgBouncer
+
 if (process.env.DATABASE_URL && process.env.DATABASE_URL.includes("pooler.supabase.com")) {
   if (!process.env.DATABASE_URL.includes("pgbouncer=true")) {
     const separator = process.env.DATABASE_URL.includes("?") ? "&" : "?";
     process.env.DATABASE_URL = `${process.env.DATABASE_URL}${separator}pgbouncer=true`;
   }
-  // Some shells/IDEs inject PRISMA_CLIENT_ENGINE_TYPE=dataproxy, which rejects postgresql:// URLs.
+ 
   if (process.env.DATABASE_URL.startsWith("postgresql://")) {
     delete process.env.PRISMA_CLIENT_ENGINE_TYPE;
   }

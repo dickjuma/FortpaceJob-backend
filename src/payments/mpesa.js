@@ -1,7 +1,3 @@
-/**
- * M-Pesa Payment Integration for Forte Platform
- * Supports STK Push, B2C payouts, and payment status checking
- */
 
 const axios = require("axios");
 const crypto = require("crypto");
@@ -10,7 +6,6 @@ const Wallet = require("../models/Wallet");
 const Contract = require("../models/Contract");
 const logger = require("../utils/logger");
 
-// M-Pesa Configuration
 const MPESA_CONFIG = {
   baseUrl: process.env.MPESA_ENV === "production" 
     ? "https://api.safaricom.co.ke" 
@@ -52,7 +47,7 @@ const getMpesaToken = async () => {
   }
 };
 
-// ─── STK Push (Payment Request) ───────────────────────────────────────────────
+// ─── STK Push (Payment Request) 
 exports.stkPush = async (phone, amount, contractId, description) => {
   try {
     const token = await getMpesaToken();

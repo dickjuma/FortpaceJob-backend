@@ -4,25 +4,25 @@ const morgan = require("morgan");
 const { errorHandler, notFound } = require("./middlewares/errorHandler");
 const { getAllowedOrigins } = require("./config/origins");
 
-// Route imports
-const authRoutes = require("./routes/authRoutes");
-const userRoutes = require("./routes/userRoutes");
-const gigRoutes = require("./routes/gigRoutes");
-const proposalRoutes = require("./routes/proposalRoutes");
-const buyerRequestRoutes = require("./routes/buyerRequestRoutes");
-const contractRoutes = require("./routes/contractRoutes");
-const reviewRoutes = require("./routes/reviewRoutes");
-const messageRoutes = require("./routes/messageRoutes");
-const notificationRoutes = require("./routes/notificationRoutes");
-const walletRoutes = require("./routes/walletRoutes");
-const paymentRoutes = require("./routes/paymentRoutes");
-const disputeRoutes = require("./routes/disputeRoutes");
-const subscriptionRoutes = require("./routes/subscriptionRoutes");
-const analyticsRoutes = require("./routes/analyticsRoutes");
-const adminRoutes = require("./routes/adminRoutes");
-const graphqlRoutes = require("./routes/graphqlRoutes");
-const profileRoutes = require("./routes/profileRoutes");
-const talentRoutes = require("./routes/talentRoutes");
+// Feature route imports
+const authRoutes = require("./features/auth/routes");
+const userRoutes = require("./features/users/routes");
+const gigRoutes = require("./features/gigs/routes");
+const proposalRoutes = require("./features/proposals/routes");
+const buyerRequestRoutes = require("./features/buyer-requests/routes");
+const contractRoutes = require("./features/contracts/routes");
+const reviewRoutes = require("./features/reviews/routes");
+const messageRoutes = require("./features/messages/routes");
+const notificationRoutes = require("./features/notifications/routes");
+const walletRoutes = require("./features/wallets/routes");
+const paymentRoutes = require("./features/payments/routes");
+const disputeRoutes = require("./features/disputes/routes");
+const subscriptionRoutes = require("./features/subscriptions/routes");
+const analyticsRoutes = require("./features/analytics/routes");
+const adminRoutes = require("./features/admin/routes");
+const graphqlRoutes = require("./features/graphql/routes");
+const profileRoutes = require("./features/profile/routes");
+const talentRoutes = require("./features/talents/routes");
 
 const app = express();
 

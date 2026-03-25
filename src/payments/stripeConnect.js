@@ -1,7 +1,3 @@
-/**
- * Stripe Connect Integration for Forte Platform
- * Handles freelancer payouts and connected accounts
- */
 
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const Wallet = require("../models/Wallet");

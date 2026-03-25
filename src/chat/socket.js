@@ -1,15 +1,18 @@
+// services/socket.js
 const { Server } = require("socket.io");
 const { verifyToken } = require("../utils/jwt");
 const User = require("../models/User");
 const logger = require("../utils/logger");
 const { getAllowedOrigins } = require("../config/origins");
-// Optional: add your Conversation and Message models when ready
-// const Conversation = require("../models/Conversation");
-// const Message = require("../models/Message");
+
+// Import your Conversation and Message models (uncomment when ready)
+const Conversation = require("../models/Conversation");
+const Message = require("../models/Message");
 
 let io;
 
 // ─── Rate limiting (in‑memory, for single instance) ─────────────────────────
+// For horizontal scaling, replace this with a Redis-based limiter.
 const rateLimiter = new Map();
 const RATE_LIMIT_WINDOW = 60000; // 1 minute
 const MAX_EVENTS_PER_WINDOW = 100;
@@ -52,13 +55,19 @@ const checkRateLimit = (socket) => {
 };
 
 /**
- * Validate that a conversation ID is a non‑empty string
- * (Optionally, you can add a check against your Conversation model)
+ * Validate that a conversation ID is a valid MongoDB ObjectId
  */
 const isValidConversationId = (conversationId) => {
-  return conversationId && typeof conversationId === "string" && conversationId.trim() !== "";
+  return (
+    conversationId &&
+    typeof conversationId === "string" &&
+    /^[0-9a-fA-F]{24}$/.test(conversationId) // Mongoose ObjectId regex
+  );
 };
 
+/**
+ * Initialize Socket.IO server
+ */
 const initSocket = (server) => {
   const allowedOrigins = getAllowedOrigins();
 
@@ -122,33 +131,33 @@ const initSocket = (server) => {
       if (!checkRateLimit(socket)) return;
 
       if (!isValidConversationId(conversationId)) {
-        return socket.emit("error", { message: "Invalid conversation ID." });
+        return socket.emit("error", { message: "Invalid conversation ID format." });
       }
 
-      // Optional: verify that the user is a participant in this conversation
-      // try {
-      //   const isParticipant = await Conversation.exists({
-      //     _id: conversationId,
-      //     participants: userId,
-      //   });
-      //   if (!isParticipant) {
-      //     return socket.emit("error", { message: "You are not a participant." });
-      //   }
-      // } catch (err) {
-      //   logger.error(`Error verifying conversation: ${err.message}`);
-      //   return socket.emit("error", { message: "Could not verify conversation." });
-      // }
+      try {
+        // Verify that the user is a participant in this conversation
+        const isParticipant = await Conversation.exists({
+          _id: conversationId,
+          participants: userId,
+        });
+        if (!isParticipant) {
+          return socket.emit("error", { message: "You are not a participant in this conversation." });
+        }
 
-      socket.join(`conv:${conversationId}`);
-      logger.info(`${userId} joined conversation: ${conversationId}`);
-      socket.emit("joined_conversation", { conversationId });
+        socket.join(`conv:${conversationId}`);
+        logger.info(`${userId} joined conversation: ${conversationId}`);
+        socket.emit("joined_conversation", { conversationId });
+      } catch (err) {
+        logger.error(`Error verifying conversation: ${err.message}`);
+        socket.emit("error", { message: "Could not verify conversation." });
+      }
     });
 
     // ─── Leave conversation room ─────────────────────────────────────────
     socket.on("leave_conversation", (conversationId) => {
       if (!checkRateLimit(socket)) return;
-
       if (!isValidConversationId(conversationId)) return;
+
       socket.leave(`conv:${conversationId}`);
       logger.info(`${userId} left conversation: ${conversationId}`);
     });
@@ -186,7 +195,7 @@ const initSocket = (server) => {
       });
     });
 
-    // ─── Send a new message (optional, can be done via HTTP) ─────────────
+    // ─── Send a new message ──────────────────────────────────────────────
     socket.on("send_message", async (data) => {
       if (!checkRateLimit(socket)) return;
 
@@ -196,21 +205,22 @@ const initSocket = (server) => {
       }
 
       try {
-        // Here you would typically save the message to your database
-        // const message = await Message.create({
-        //   sender: userId,
-        //   conversation: conversationId,
-        //   content,
-        //   attachments,
-        // });
+        // Save message to database
+        const message = await Message.create({
+          sender: userId,
+          conversation: conversationId,
+          content: content.trim(),
+          attachments: attachments || [],
+        });
+
+        // Populate sender info for the broadcast
+        const populatedMessage = await Message.findById(message._id)
+          .populate("sender", "name avatar")
+          .lean();
 
         // Broadcast to everyone in the conversation (including sender)
         io.to(`conv:${conversationId}`).emit("new_message", {
-          _id: "temp-id", // replace with message._id
-          sender: { _id: userId, name: user.name, avatar: user.avatar },
-          content,
-          attachments,
-          createdAt: new Date(),
+          ...populatedMessage,
           conversationId,
         });
       } catch (err) {
@@ -229,6 +239,9 @@ const initSocket = (server) => {
   return io;
 };
 
+/**
+ * Get the Socket.IO instance (for use in other parts of the app)
+ */
 const getIO = () => {
   if (!io) throw new Error("Socket.IO not initialized.");
   return io;

@@ -8,7 +8,7 @@ const { verifyCloudinaryConnection } = require("./src/config/cloudinary");
 const { verifyFluxSMSConnection } = require("./src/utils/sms");
 const { verifyResendConnection } = require("./src/utils/email");
 const logger = require("./src/utils/logger");
-const { scheduleInactiveUserCleanup } = require("./src/controllers/userCleanup");
+const { scheduleInactiveUserCleanup } = require("./src/features/users/cleanup");
 const { initCronJob } = require("./src/services/cronService");
 
 const INITIAL_PORT = Number(process.env.PORT) || 5000;
